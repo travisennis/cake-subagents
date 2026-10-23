@@ -10,7 +10,7 @@ from its global toolbox directory and registers each one as `tb__<filename>`.
 ## Requirements
 
 - Cake (`CAKE_BIN`, default `$HOME/bin/cake`)
-- Go 1.25 or newer to build
+- Go 1.27.3 or newer to build
 - Python 3 for the offline test suite
 
 ## Install
