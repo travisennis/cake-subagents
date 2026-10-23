@@ -12,7 +12,9 @@ import unittest
 
 # The seven checked-in symlinks are the tool surface Cake discovers. They point
 # at bin/cake-subagent, which selects its mode from the name it was invoked as.
-TOOLS = Path(__file__).resolve().parents[1] / "bin"
+# A rewrite can point this at another directory of matching symlinks, e.g. the
+# Go build output in dist/.
+TOOLS = Path(os.environ.get("CAKE_SUBAGENT_TOOLS", Path(__file__).resolve().parents[1] / "bin"))
 ACTIVE = {"starting", "running", "stopping"}
 FAKE = r'''
 import json, os, signal, sys, time, uuid
