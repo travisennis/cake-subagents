@@ -7,26 +7,29 @@ subagent, and four that let subagents exchange durable messages.
 This is a Cake toolbox plugin, not a Cake fork. Cake discovers the executables
 from its global toolbox directory and registers each one as `tb__<filename>`.
 
-## Status
+## Requirements
 
-The implementation is Ruby (macOS system Ruby 2.6, standard library only). A Go
-port is planned; `tests/` is the language-neutral conformance suite that port
-must pass unchanged.
+- Cake (`CAKE_BIN`, default `$HOME/bin/cake`)
+- Go 1.25 or newer to build
+- Python 3 for the offline test suite
 
 ## Install
 
 ```sh
 git clone git@github.com:travisennis/cake-subagents.git ~/Projects/cake/cake-subagents
 cd ~/Projects/cake/cake-subagents
-just install      # or ./bin/install
-just doctor       # or ./bin/doctor
+just build        # or: go build -o dist/cake-subagent ./cmd/cake-subagent
+just install      # or: ./bin/install
+just doctor       # or: ./bin/doctor
 ```
 
-`bin/install` symlinks the seven checked-in `bin/subagent_*` entries into
-`${XDG_CONFIG_HOME:-$HOME/.config}/cake/tools`. Cake follows symlinks during
-toolbox discovery, so no settings or environment changes are needed. Re-run
-install after moving the repository. Existing non-symlink files at the
-destination are never replaced.
+`bin/install` symlinks the seven tool names into
+`${XDG_CONFIG_HOME:-$HOME/.config}/cake/tools`, all pointing at
+`dist/cake-subagent`. Each name selects the mode the binary runs in. Cake
+follows symlinks during toolbox discovery, so no settings or environment
+changes are needed. Re-run `just install` after moving the repository; re-run
+`just build` after changing the code (the symlinks follow the rebuilt binary).
+Existing non-symlink files at the destination are never replaced.
 
 `bin/uninstall` removes only links that point back into this checkout.
 
@@ -53,9 +56,10 @@ Two caveats:
 | `subagent_wait` | Block until this run's mailbox receives a message. |
 | `subagent_peers` | List the other runs in the shared run store. |
 
-All seven are symlinks to `bin/cake-subagent`, which selects its mode from the
-name it was invoked as. Each answers the ordinary `TOOLBOX_ACTION=describe` /
-`TOOLBOX_ACTION=execute` JSON toolbox protocol.
+Each tool answers the ordinary `TOOLBOX_ACTION=describe` /
+`TOOLBOX_ACTION=execute` JSON toolbox protocol. The executable is one Go binary;
+it picks its mode from the filename it was invoked as, so the seven symlinks
+share one implementation.
 
 ## Model workflow
 
@@ -102,7 +106,7 @@ system prompt. A configured type's sandbox takes precedence, including
 The launcher passes a depth marker (`CAKE_TOOLBOX_SUBAGENT_DEPTH`) to Cake so
 both launchers reject nested delegation.
 
-The detached Ruby supervisor and Cake have separate process groups and fully
+The detached supervisor and Cake have separate process groups and fully
 redirected standard streams. They continue after the calling tool/turn exits;
 there is no automatic completion notification or parent-session cancellation.
 The worker recognizes matching task events, checks both the final event and
@@ -149,8 +153,8 @@ can message each other directly.
   into a child's mailbox, and a finished run's mailbox stays readable for later
   handoffs.
 
-Enable push delivery with `bin/install --hook`, then add a `PreToolUse` hook with
-matcher `"*"` to `~/.config/cake/hooks.json`:
+Enable push delivery with `just install-hook` (or `bin/install --hook`), then add
+a `PreToolUse` hook with matcher `"*"` to `~/.config/cake/hooks.json`:
 
 ```json
 "PreToolUse": [
@@ -171,8 +175,9 @@ message by themselves.
 ## Development
 
 ```sh
-just test      # python3 -m unittest discover -s tests -v
-just lint      # ruby -c and sh -n on every script
+just build     # build dist/cake-subagent and the seven tool-name symlinks
+just test      # build, then run the offline integration suite against dist/
+just vet       # go vet, gofmt check, sh -n on the scripts
 just doctor    # verify the installed symlinks and describe output
 ```
 
@@ -187,9 +192,13 @@ They make no model calls. A live Cake/provider smoke test is separate.
 Layout:
 
 ```
-bin/cake-subagent   entry point; mode from the invoked filename or subcommand
-bin/subagent_*      seven symlinks Cake discovers
-lib/                implementation
+cmd/cake-subagent/  main
+internal/subagent/  implementation
+tests/              offline integration suite (language-neutral contract)
 hooks/              opt-in PreToolUse mailbox drain
-tests/              offline integration suite
+bin/                install, uninstall, doctor
+dist/               build output; created by `just build`, not committed
 ```
+
+`tests/` drives whatever `CAKE_SUBAGENT_TOOLS` points at, so it can validate a
+future rewrite without changes.

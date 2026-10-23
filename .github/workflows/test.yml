@@ -9,10 +9,18 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Lint
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Vet
         run: |
-          /usr/bin/ruby -c lib/subagent_async.rb
-          /usr/bin/ruby -c bin/cake-subagent
+          go vet ./...
+          test -z "$(gofmt -l cmd internal)"
           sh -n bin/install bin/uninstall bin/doctor hooks/subagent-inbox.sh
       - name: Test
-        run: python3 -m unittest discover -s tests -v
+        run: |
+          go build -o dist/cake-subagent ./cmd/cake-subagent
+          for name in subagent_async subagent_cancel subagent_inbox subagent_peers subagent_send subagent_status subagent_wait; do
+            ln -sfn cake-subagent "dist/$name"
+          done
+          CAKE_SUBAGENT_TOOLS="$PWD/dist" python3 -m unittest discover -s tests -v

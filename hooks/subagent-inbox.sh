@@ -13,4 +13,4 @@ while [ -L "$self" ]; do
     esac
 done
 root=$(cd "$(dirname "$self")/.." && pwd -P)
-exec /usr/bin/ruby "$root/bin/cake-subagent" drain
+exec "$root/dist/cake-subagent" drain
