@@ -1,0 +1,58 @@
+#!/bin/sh
+# Link the toolbox executables into Cake's global toolbox directory.
+#
+#   bin/install            # the seven subagent_* tools
+#   bin/install --hook     # also link the opt-in mailbox delivery hook
+#
+# Re-run after changing the repository. Existing non-symlink files are never
+# replaced, so a hand-written tool with the same name is safe.
+set -eu
+
+root=$(cd "$(dirname "$0")/.." && pwd -P)
+config=${XDG_CONFIG_HOME:-"$HOME/.config"}
+dest=${CAKE_TOOLBOX_DEST:-"$config/cake/tools"}
+hook_dir=$config/cake/hooks
+names="subagent_async subagent_cancel subagent_inbox subagent_peers subagent_send subagent_status subagent_wait"
+
+with_hook=0
+for arg in "$@"; do
+    case "$arg" in
+        --hook) with_hook=1 ;;
+        -h | --help)
+            sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0
+            ;;
+        *)
+            printf 'unknown option: %s\n' "$arg" >&2
+            exit 2
+            ;;
+    esac
+done
+
+mkdir -p "$dest"
+for name in $names; do
+    src="$root/bin/$name"
+    link="$dest/$name"
+    if [ ! -e "$src" ]; then
+        printf 'missing source: %s\n' "$src" >&2
+        exit 1
+    fi
+    if [ -e "$link" ] && [ ! -L "$link" ]; then
+        printf 'refusing to replace non-symlink: %s\n' "$link" >&2
+        exit 1
+    fi
+    ln -sfn "$src" "$link"
+    printf 'linked %s -> %s\n' "$link" "$src"
+done
+
+if [ "$with_hook" -eq 1 ]; then
+    mkdir -p "$hook_dir"
+    link="$hook_dir/subagent-inbox.sh"
+    if [ -e "$link" ] && [ ! -L "$link" ]; then
+        printf 'refusing to replace non-symlink: %s\n' "$link" >&2
+        exit 1
+    fi
+    ln -sfn "$root/hooks/subagent-inbox.sh" "$link"
+    printf 'linked %s -> %s\n' "$link" "$root/hooks/subagent-inbox.sh"
+    printf 'Enable it with the PreToolUse entry in README.md.\n'
+fi

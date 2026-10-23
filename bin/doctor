@@ -1,0 +1,42 @@
+#!/bin/sh
+# Verify that Cake will discover all seven tools and that each reports the
+# expected name. Reads only; makes no model calls and starts no runs.
+set -eu
+
+config=${XDG_CONFIG_HOME:-"$HOME/.config"}
+dest=${CAKE_TOOLBOX_DEST:-"$config/cake/tools"}
+names="subagent_async subagent_cancel subagent_inbox subagent_peers subagent_send subagent_status subagent_wait"
+failures=0
+
+if [ ! -d "$dest" ]; then
+    printf 'missing toolbox directory: %s\n' "$dest" >&2
+    printf 'run bin/install first\n' >&2
+    exit 1
+fi
+
+for name in $names; do
+    link="$dest/$name"
+    if [ ! -L "$link" ]; then
+        printf 'missing: %s is not a symlink\n' "$link" >&2
+        failures=$((failures + 1))
+        continue
+    fi
+    if ! output=$(TOOLBOX_ACTION=describe "$link" 2>&1); then
+        printf 'describe failed: %s: %s\n' "$name" "$output" >&2
+        failures=$((failures + 1))
+        continue
+    fi
+    reported=$(printf '%s' "$output" | /usr/bin/ruby -rjson -e 'puts JSON.parse($stdin.read).fetch("name")')
+    if [ "$reported" != "$name" ]; then
+        printf 'name mismatch: %s reported %s\n' "$name" "$reported" >&2
+        failures=$((failures + 1))
+        continue
+    fi
+    printf 'ok: %s\n' "$name"
+done
+
+if [ -e "$config/cake/tools/README.md" ]; then
+    printf 'note: %s/cake/tools/README.md now lives in this repository\n' "$config" >&2
+fi
+
+exit "$failures"

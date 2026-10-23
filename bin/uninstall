@@ -1,0 +1,28 @@
+#!/bin/sh
+# Remove the symlinks created by bin/install. Only links pointing into this
+# repository are removed; anything else is reported and left alone.
+set -eu
+
+root=$(cd "$(dirname "$0")/.." && pwd -P)
+config=${XDG_CONFIG_HOME:-"$HOME/.config"}
+dest=${CAKE_TOOLBOX_DEST:-"$config/cake/tools"}
+names="subagent_async subagent_cancel subagent_inbox subagent_peers subagent_send subagent_status subagent_wait"
+
+remove() {
+    link=$1
+    if [ ! -L "$link" ]; then
+        return 0
+    fi
+    target=$(readlink "$link")
+    case "$target" in
+        "$root"/*) rm -f "$link"; printf 'removed %s\n' "$link" ;;
+        *) printf 'left %s alone: it links to %s\n' "$link" "$target" >&2 ;;
+    esac
+}
+
+for name in $names; do
+    remove "$dest/$name"
+done
+remove "$config/cake/hooks/subagent-inbox.sh"
+
+printf 'Run directories under %s/subagent-runs are untouched.\n' "${CAKE_DATA_DIR:-$HOME/.local/share/cake}"

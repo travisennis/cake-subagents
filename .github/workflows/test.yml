@@ -1,0 +1,18 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint
+        run: |
+          /usr/bin/ruby -c lib/subagent_async.rb
+          /usr/bin/ruby -c bin/cake-subagent
+          sh -n bin/install bin/uninstall bin/doctor hooks/subagent-inbox.sh
+      - name: Test
+        run: python3 -m unittest discover -s tests -v

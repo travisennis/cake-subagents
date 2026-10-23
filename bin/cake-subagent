@@ -1,0 +1,10 @@
+#!/usr/bin/ruby
+# Single entry point for the subagent toolbox tools.
+#
+# Cake discovers executables by filename and registers each as `tb__<name>`.
+# The `subagent_*` files beside this one are symlinks to it, so all seven tools
+# share one implementation and pick their mode from the name they were invoked
+# as. `require_relative` resolves through those symlinks.
+require_relative "../lib/subagent_async"
+
+AsyncSubagent.cli
