@@ -2,6 +2,11 @@
 default:
     @just --list
 
+# Install this clone's git hooks: commit messages must be Conventional Commits.
+hooks:
+    git config core.hooksPath .githooks
+    @echo "Installed .githooks (commit-msg)."
+
 # Build the Go binary and the seven tool-name symlinks in dist/.
 build:
     go build -o dist/cake-subagent ./cmd/cake-subagent
@@ -21,6 +26,7 @@ vet:
     sh -n bin/uninstall
     sh -n bin/doctor
     sh -n hooks/subagent-inbox.sh
+    sh -n .githooks/commit-msg
 
 # Symlink the seven tools into Cake's global toolbox directory.
 install: build

@@ -175,6 +175,7 @@ message by themselves.
 ## Development
 
 ```sh
+just hooks     # install the commit-msg hook (Conventional Commits)
 just build     # build dist/cake-subagent and the seven tool-name symlinks
 just test      # build, then run the offline integration suite against dist/
 just vet       # go vet, gofmt check, sh -n on the scripts
@@ -196,6 +197,7 @@ cmd/cake-subagent/  main
 internal/subagent/  implementation
 tests/              offline integration suite (language-neutral contract)
 hooks/              opt-in PreToolUse mailbox drain
+.githooks/          commit-msg hook (Conventional Commits)
 bin/                install, uninstall, doctor
 dist/               build output; created by `just build`, not committed
 ```

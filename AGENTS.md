@@ -24,6 +24,7 @@ except the seven symlinks installed into `~/.config/cake/tools/`.
 ## Commands
 
 ```sh
+just hooks     # install the commit-msg hook (Conventional Commits)
 just build     # go build into dist/ plus the seven tool-name symlinks
 just test      # build, then run the offline suite; ~25s; no model calls
 just vet       # go vet, gofmt check, sh -n
