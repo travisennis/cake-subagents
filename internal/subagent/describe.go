@@ -44,7 +44,7 @@ func describe(mode string) (map[string]any, error) {
 		required = []string{"prompt"}
 	case "status":
 		description = "Check one asynchronous subagent run. Returns compact progress while active and the result/error when finished, plus paths to full output and diagnostics. Prefer checking after useful work instead of repeatedly polling. Unknown means the supervisor disappeared; the Cake process may still be running, so inspect before retrying. No model call is made."
-		properties["wait_seconds"] = map[string]any{"type": "integer", "minimum": 0, "maximum": 30, "default": 0, "description": "Optionally wait up to this many seconds for completion when no other work remains."}
+		properties["wait_seconds"] = map[string]any{"type": "integer", "minimum": 0, "maximum": statusWait, "default": 0, "description": "Optionally wait up to this many seconds for completion when no other work remains."}
 	case "cancel":
 		description = "Request cancellation of an asynchronous subagent run. Returns immediately; use subagent_status to confirm termination. Completed runs are unchanged. This does not undo edits already made. No model call is made."
 	case "post":
@@ -66,7 +66,7 @@ func describe(mode string) (map[string]any, error) {
 		}
 		required = []string{}
 	case "wait":
-		description = "Block until a message arrives in this subagent's own mailbox or the timeout expires. Use when waiting for a peer's reply. Advances the cursor past returned messages. No model call is made."
+		description = "Block until this subagent's own mailbox receives a message, or the timeout expires. Only a subagent run has a mailbox: from a top-level session this tool fails immediately, so call subagent_status with wait_seconds to wait for a subagent to finish. Use when waiting for a peer's reply. Advances the cursor past returned messages. No model call is made."
 		properties = map[string]any{
 			"timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": peerWait, "default": peerWait, "description": "Maximum seconds to wait."},
 			"limit":           map[string]any{"type": "integer", "minimum": 1, "maximum": maxLimit, "default": 20, "description": "Maximum messages to return."},
@@ -82,6 +82,12 @@ func describe(mode string) (map[string]any, error) {
 	if mode == "status" || mode == "peers" {
 		replay = "safe"
 	}
+	// Cake enforces this as the execute deadline. The status wait must finish
+	// below it so a long poll can still write its final snapshot.
+	executeTimeout := 40
+	if mode == "status" {
+		executeTimeout = statusWait + 10
+	}
 	return map[string]any{
 		"name":        toolNames[mode],
 		"description": description,
@@ -91,7 +97,7 @@ func describe(mode string) (map[string]any, error) {
 			"required":             required,
 			"additionalProperties": false,
 		},
-		"timeout": 40,
+		"timeout": executeTimeout,
 		"replay":  replay,
 	}, nil
 }

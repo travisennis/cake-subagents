@@ -154,7 +154,7 @@ func inbox(args map[string]any) (map[string]any, error) {
 func waitForMessage(args map[string]any) (map[string]any, error) {
 	id := selfRunID()
 	if id == "" {
-		return nil, errors.New("subagent_wait must run inside a Cake subagent run (CAKE_SUBAGENT_RUN_ID is unset)")
+		return nil, errors.New("subagent_wait only reads a subagent's own mailbox and this process has no subagent run identity (CAKE_SUBAGENT_RUN_ID is unset). To wait for a subagent run to finish, call subagent_status with run_id and wait_seconds.")
 	}
 	directory := filepath.Join(runsRoot(), id)
 	limit := int(intArg(args, "limit", 20))

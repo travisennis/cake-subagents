@@ -25,6 +25,7 @@ const (
 	maxBody      = 16_384
 	maxLimit     = 100
 	peerWait     = 30
+	statusWait   = 300
 	compactBytes = 38_000
 	startupWait  = time.Second
 )

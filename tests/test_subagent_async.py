@@ -140,6 +140,27 @@ class AsyncSubagentTests(unittest.TestCase):
                               env=dict(self.env, CAKE_TOOLBOX_SUBAGENT_DEPTH=depth), success=False)
             self.assertTrue("delegation" in error or "DEPTH" in error)
 
+    def test_wait_is_subagent_only_and_status_allows_longer_waits(self):
+        wait_description = self.call("subagent_wait", action="describe")
+        self.assertIn("top-level", wait_description["description"])
+        self.assertIn("subagent_status", wait_description["description"])
+
+        error = self.call("subagent_wait", {}, success=False)
+        self.assertIn("subagent_status", error)
+        self.assertIn("wait_seconds", error)
+
+        status_description = self.call("subagent_status", action="describe")
+        wait_schema = status_description["inputSchema"]["properties"]["wait_seconds"]
+        self.assertEqual(wait_schema["maximum"], 300)
+        self.assertGreater(status_description["timeout"], wait_schema["maximum"])
+
+        state = self.launch({"delay": 0.05})
+        done = self.call("subagent_status", {"run_id": state["run_id"], "wait_seconds": 300})
+        self.assertEqual(done["status"], "completed")
+        error = self.call("subagent_status", {"run_id": state["run_id"], "wait_seconds": 301},
+                          success=False)
+        self.assertIn("wait_seconds must be an integer in 0..300", error)
+
     def test_returns_before_completion_and_preserves_output(self):
         start = time.monotonic()
         state = self.launch({"delay": 2})

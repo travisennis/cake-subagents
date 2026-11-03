@@ -49,11 +49,11 @@ Two caveats:
 | Tool | Purpose |
 | --- | --- |
 | `subagent_async` | Start a background invocation; returns within about one second after validation and launch. |
-| `subagent_status` | Inspect an invocation, optionally waiting up to 30 seconds. |
+| `subagent_status` | Inspect an invocation, optionally waiting up to 300 seconds. |
 | `subagent_cancel` | Request cancellation, then check status to confirm it. |
 | `subagent_send` | Write a message into another run's mailbox. |
 | `subagent_inbox` | Read this run's own mailbox. |
-| `subagent_wait` | Block until this run's mailbox receives a message. |
+| `subagent_wait` | Block until this subagent's mailbox receives a message; subagent-only. |
 | `subagent_peers` | List the other runs in the shared run store. |
 
 Each tool answers the ordinary `TOOLBOX_ACTION=describe` /
@@ -75,7 +75,8 @@ paths named `status_file`, `events_file`, `log_file`, `result_file`, and
 some output files may not exist yet. A resumed session's ID is known immediately.
 
 Do other work, then pass `{"run_id":"<returned UUID>"}` to `subagent_status`.
-Use `wait_seconds` only when ready to wait for the result. Status reports a
+Use `wait_seconds` (0 to 300) only when ready to wait for the result; the tool's
+execute timeout is kept above that maximum. Status reports a
 compact event count/type/time while running, and the result/error when finished.
 Large results are truncated inline with `result_truncated: true`; `result_file`
 retains the full result and original `task_complete` event. `events_file` is the

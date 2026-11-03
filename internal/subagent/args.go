@@ -50,7 +50,7 @@ func integerRanges(mode string) map[string][2]int64 {
 	}
 	return map[string][2]int64{
 		"timeout_seconds": {1, maximum},
-		"wait_seconds":    {0, 30},
+		"wait_seconds":    {0, statusWait},
 		"limit":           {1, maxLimit},
 	}
 }
