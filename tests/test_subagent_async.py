@@ -231,6 +231,8 @@ class AsyncSubagentTests(unittest.TestCase):
         self.assertEqual(second["session_id"], first["session_id"])
         self.assertNotEqual(second["task_id"], first["task_id"])
         self.assertNotEqual(second["run_id"], first["run_id"])
+        observed = json.loads((self.directory / "observed.json").read_text())
+        self.assertIn("--allow-session-model-change", observed["args"])
 
     def test_parallel_launches(self):
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:

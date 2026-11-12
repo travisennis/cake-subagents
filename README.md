@@ -92,9 +92,12 @@ the supervisor is alive; it never signals an unchecked saved PID.
 
 To continue a finished conversation, call `subagent_async` with a new `prompt`,
 its `session_id`, and the same `cwd` and configured `type`, if used. Each call
-creates a fresh run ID and task ID. Async session locks reject overlapping
-invocations using the same run store; Cake's own session lock also protects
-against other Cake writers.
+creates a fresh run ID and task ID. A resume passes
+`--allow-session-model-change`, so a session created under another install's
+default entry continues against this install's configuration; Cake records the
+override without rewriting the stored snapshot. Async session locks reject
+overlapping invocations using the same run store; Cake's own session lock also
+protects against other Cake writers.
 
 ## Behavior and storage
 

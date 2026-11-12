@@ -257,7 +257,10 @@ func launch(args map[string]any) (result map[string]any, err error) {
 		command = append(command, "--system-prompt", promptPath)
 	}
 	if sessionID != "" {
-		command = append(command, "--resume", sessionID)
+		// The resumed session may name a model entry this install does not
+		// define. Cake records the accepted override in telemetry without
+		// rewriting the stored snapshot.
+		command = append(command, "--allow-session-model-change", "--resume", sessionID)
 	}
 	command = append(command, "--", stringField(args, "prompt"))
 	request := map[string]any{"command": command, "depth": depth + 1}
