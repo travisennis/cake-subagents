@@ -59,6 +59,9 @@ just doctor    # confirm Cake will discover all seven tools
 - Keep the seven tool names, their argument schemas, the run-store schema, the
   environment variables, and the status vocabulary stable. `README.md` is the
   specification.
+- Never hardcode a model or profile in the launcher. A child must inherit the
+  installation's configured default; overrides are explicit
+  (`CAKE_SUBAGENT_MODEL`, `CAKE_SUBAGENT_PROFILE`, or type front matter).
 - Error messages the offline suite asserts on are part of the contract, e.g. a
   missing `CAKE_BIN` must contain `No such file`.
 

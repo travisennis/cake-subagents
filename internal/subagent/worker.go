@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -307,6 +308,12 @@ func handleEvent(line []byte, state map[string]any, completion *map[string]any, 
 		}
 		state["session_id"] = sessionID
 		state["task_id"] = taskID
+		if value := stringField(record, "model"); value != "" {
+			state["model"] = value
+		}
+		if value := stringField(record, "model_config"); value != "" && stringField(state, "model_config") == "" {
+			state["model_config"] = value
+		}
 		if path := sessionFile(sessionID, stringField(state, "cwd")); path != nil {
 			state["session_file"] = *path
 		}
@@ -351,6 +358,38 @@ func markFailed(state map[string]any, err error) {
 	_ = writeJSON(stringField(state, "status_file"), compact(state))
 }
 
+// logTail returns the end of a log with whitespace collapsed and its length
+// bounded, so a startup failure can name its cause in status instead of only
+// in a file the caller has to open.
+func logTail(path string, limit int) string {
+	file, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return ""
+	}
+	const readLimit = 1024
+	offset := info.Size() - readLimit
+	if offset < 0 {
+		offset = 0
+	}
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return ""
+	}
+	data, err := io.ReadAll(io.LimitReader(file, readLimit))
+	if err != nil {
+		return ""
+	}
+	text := strings.Join(strings.Fields(string(data)), " ")
+	if len(text) > limit {
+		text = text[:limit] + "..."
+	}
+	return text
+}
+
 func finish(state map[string]any, completion map[string]any, exit processExit, reason string) {
 	state["finished_at"] = now()
 	if exit.signaled {
@@ -376,7 +415,11 @@ func finish(state map[string]any, completion map[string]any, exit processExit, r
 		}
 	case completion == nil:
 		state["status"] = "failed"
-		state["error"] = "Cake exited without a matching task_complete event; inspect log_file"
+		message := "Cake exited without a matching task_complete event; inspect log_file"
+		if tail := logTail(stringField(state, "log_file"), 500); tail != "" {
+			message = "Cake exited without a matching task_complete event: " + tail
+		}
+		state["error"] = message
 	case stringField(completion, "subtype") == "success" && !exit.signaled && exit.code == 0:
 		state["status"] = "completed"
 	default:

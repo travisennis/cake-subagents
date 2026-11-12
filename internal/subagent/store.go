@@ -31,14 +31,15 @@ const (
 )
 
 var (
-	uuidPattern  = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-	namePattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
-	depthPattern = regexp.MustCompile(`^[0-9]+$`)
-	kinds        = []string{"note", "request", "reply", "event"}
-	stringKeys   = []string{"prompt", "cwd", "sandbox", "type", "session_id", "run_id", "to", "body", "kind", "reply_to", "from", "name", "team"}
-	uuidKeys     = []string{"run_id", "session_id", "reply_to"}
-	booleanKeys  = []string{"peek", "all"}
-	activeStates = map[string]bool{"starting": true, "running": true, "stopping": true}
+	uuidPattern       = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	namePattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
+	depthPattern      = regexp.MustCompile(`^[0-9]+$`)
+	configNamePattern = regexp.MustCompile(`^[a-z0-9-]+$`)
+	kinds             = []string{"note", "request", "reply", "event"}
+	stringKeys        = []string{"prompt", "cwd", "sandbox", "type", "session_id", "run_id", "to", "body", "kind", "reply_to", "from", "name", "team"}
+	uuidKeys          = []string{"run_id", "session_id", "reply_to"}
+	booleanKeys       = []string{"peek", "all"}
+	activeStates      = map[string]bool{"starting": true, "running": true, "stopping": true}
 )
 
 var toolboxModes = map[string]string{
@@ -305,6 +306,8 @@ func unreadMessages(directory string) []map[string]any {
 type agentType struct {
 	Name    string
 	Sandbox string
+	Model   string
+	Profile string
 	Body    string
 }
 
@@ -366,7 +369,7 @@ func configs(cwd string) ([]agentType, error) {
 			return nil, fmt.Errorf("%s: YAML front matter must be a mapping", path)
 		}
 		for key := range header {
-			if key != "name" && key != "sandbox" {
+			if key != "name" && key != "sandbox" && key != "model" && key != "profile" {
 				return nil, fmt.Errorf("%s: unsupported front-matter fields", path)
 			}
 		}
@@ -385,7 +388,24 @@ func configs(cwd string) ([]agentType, error) {
 		if sandbox != "read-only" && sandbox != "workspace-write" && sandbox != "danger-full-access" {
 			return nil, fmt.Errorf("%s: invalid sandbox", path)
 		}
-		result = append(result, agentType{Name: expected, Sandbox: sandbox, Body: strings.Join(lines[closing+1:], "")})
+		model := ""
+		if value, present := header["model"]; present {
+			model, ok = value.(string)
+			if !ok || !configNamePattern.MatchString(model) {
+				return nil, fmt.Errorf("%s: invalid model", path)
+			}
+		}
+		profile := ""
+		if value, present := header["profile"]; present {
+			profile, ok = value.(string)
+			if !ok || !configNamePattern.MatchString(profile) {
+				return nil, fmt.Errorf("%s: invalid profile", path)
+			}
+		}
+		result = append(result, agentType{
+			Name: expected, Sandbox: sandbox, Model: model, Profile: profile,
+			Body: strings.Join(lines[closing+1:], ""),
+		})
 	}
 	return result, nil
 }

@@ -38,7 +38,8 @@ def emit(value):
         sys.stdout.write(text[mid:]); sys.stdout.flush()
     else:
         print(text, end="", flush=True)
-emit({"type": "task_start", "session_id": sid, "task_id": tid})
+emit({"type": "task_start", "session_id": sid, "task_id": tid,
+      "model": "fake-provider-model", "model_config": "fake-entry"})
 observed = {"args": args[:-1], "cwd": os.getcwd(), "depth": os.environ.get("CAKE_TOOLBOX_SUBAGENT_DEPTH"),
             "run_id": os.environ.get("CAKE_SUBAGENT_RUN_ID"), "name": os.environ.get("CAKE_SUBAGENT_NAME"),
             "team": os.environ.get("CAKE_SUBAGENT_TEAM")}
@@ -79,7 +80,8 @@ class AsyncSubagentTests(unittest.TestCase):
         # Not inherited: a test runner that is itself a subagent must not leak
         # its own run identity into these assertions.
         for key in ["CAKE_SUBAGENT_RUN_ID", "CAKE_SUBAGENT_SESSION_ID",
-                    "CAKE_SUBAGENT_NAME", "CAKE_SUBAGENT_TEAM"]:
+                    "CAKE_SUBAGENT_NAME", "CAKE_SUBAGENT_TEAM",
+                    "CAKE_SUBAGENT_MODEL", "CAKE_SUBAGENT_PROFILE"]:
             self.env.pop(key, None)
 
     def tearDown(self):
@@ -105,10 +107,10 @@ class AsyncSubagentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
-    def launch(self, scenario=None, **args):
+    def launch(self, scenario=None, env=None, **args):
         scenario = dict(scenario or {})
         scenario.setdefault("observed", str(self.directory / "observed.json"))
-        return self.call("subagent_async", dict(prompt=json.dumps(scenario), **args))
+        return self.call("subagent_async", dict(prompt=json.dumps(scenario), **args), env=env)
 
     def completed(self, state):
         return self.call("subagent_status", {"run_id": state["run_id"], "wait_seconds": 8})
@@ -201,6 +203,8 @@ class AsyncSubagentTests(unittest.TestCase):
                 self.assertEqual(done["status"], "failed")
                 if error:
                     self.assertIn(error, done["error"])
+        failed = self.completed(self.launch({"startup_failure": True}))
+        self.assertIn("invalid provider configuration", failed["error"])
         self.env["CAKE_BIN"] = str(self.directory / "missing-cake")
         done = self.completed(self.launch())
         self.assertEqual(done["status"], "failed")
@@ -237,18 +241,62 @@ class AsyncSubagentTests(unittest.TestCase):
         for state in states:
             self.assertEqual(self.completed(state)["status"], "completed")
 
+    def test_launch_inherits_install_defaults_and_accepts_overrides(self):
+        done = self.completed(self.launch())
+        observed = json.loads((self.directory / "observed.json").read_text())
+        self.assertEqual(done["status"], "completed")
+        self.assertNotIn("--model", observed["args"])
+        self.assertNotIn("--profile", observed["args"])
+        self.assertEqual(done["model"], "fake-provider-model")
+        self.assertEqual(done["model_config"], "fake-entry")
+        override = dict(self.env, CAKE_SUBAGENT_MODEL="sub-model",
+                        CAKE_SUBAGENT_PROFILE="review")
+        done = self.completed(self.launch(env=override))
+        observed = json.loads((self.directory / "observed.json").read_text())
+        self.assertEqual(done["status"], "completed")
+        self.assertEqual(observed["args"][observed["args"].index("--model") + 1], "sub-model")
+        self.assertEqual(observed["args"][observed["args"].index("--profile") + 1], "review")
+        self.assertEqual(done["model_config"], "sub-model")
+        self.assertEqual(done["profile"], "review")
+        bad = dict(self.env, CAKE_SUBAGENT_MODEL="Not_A_Model")
+        stderr = self.call("subagent_async", {"prompt": "{}"}, env=bad, success=False)
+        self.assertIn("invalid model", stderr)
+
+    def test_cake_binary_falls_back_to_path(self):
+        home = self.directory / "home"
+        home.mkdir()
+        binary = self.directory / "pathbin" / "cake"
+        binary.parent.mkdir()
+        binary.write_text(self.fake.read_text())
+        binary.chmod(0o700)
+        env = dict(self.env, HOME=str(home),
+                   PATH=str(binary.parent) + os.pathsep + os.environ.get("PATH", ""))
+        env.pop("CAKE_BIN")
+        done = self.completed(self.launch(env=env))
+        self.assertEqual(done["status"], "completed")
+
     def test_configured_type_and_cwd(self):
         target = self.directory / "other workspace"
         config = target / ".agents/subagents/reviewer.md"
         config.parent.mkdir(parents=True)
-        config.write_text('---\nname: reviewer\nsandbox: danger-full-access\n---\nReview carefully.\n')
+        config.write_text('---\nname: reviewer\nsandbox: danger-full-access\n'
+                          'model: reviewer-model\nprofile: review\n---\nReview carefully.\n')
         done = self.completed(self.launch(cwd=str(target), type="reviewer", sandbox="read-only"))
         self.assertEqual(done["status"], "completed")
         observed = json.loads((self.directory / "observed.json").read_text())
         self.assertEqual(observed["cwd"], str(target.resolve()))
         self.assertEqual(observed["system_prompt"], "Review carefully.\n")
         self.assertIn("danger-full-access", observed["args"])
+        self.assertEqual(observed["args"][observed["args"].index("--model") + 1], "reviewer-model")
+        self.assertEqual(observed["args"][observed["args"].index("--profile") + 1], "review")
         self.assertFalse(Path(observed["args"][observed["args"].index("--system-prompt") + 1]).exists())
+        override = dict(self.env, CAKE_SUBAGENT_MODEL="env-model")
+        self.completed(self.launch(cwd=str(target), type="reviewer", env=override))
+        observed = json.loads((self.directory / "observed.json").read_text())
+        self.assertEqual(observed["args"][observed["args"].index("--model") + 1], "env-model")
+        config.write_text('---\nname: reviewer\nmodel: Bad_Model\n---\n')
+        stderr = self.call("subagent_async", {"cwd": str(target), "type": "reviewer", "prompt": "x"}, success=False)
+        self.assertIn("invalid model", stderr)
         config.write_text('---\nname: wrong\n---\n')
         self.call("subagent_async", {"cwd": str(target), "type": "reviewer", "prompt": "x"}, success=False)
 

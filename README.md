@@ -9,7 +9,8 @@ from its global toolbox directory and registers each one as `tb__<filename>`.
 
 ## Requirements
 
-- Cake (`CAKE_BIN`, default `$HOME/bin/cake`)
+- Cake (`CAKE_BIN`, else `$HOME/bin/cake`, else `cake` on `PATH`). It must have
+  a usable `default_model` unless every launch sets a model.
 - Go 1.27.3 or newer to build
 - Python 3 for the offline test suite
 
@@ -97,12 +98,22 @@ against other Cake writers.
 
 ## Behavior and storage
 
-The launcher defaults to model `deepseek-flash-xhigh`, profile `all-skills`,
-sandbox `workspace-write`, and `$HOME/bin/cake` as the executable. Configured
-types live under `cwd/.agents/subagents/*.md`; their YAML front matter accepts
-`name` (matching the filename) and `sandbox`, and their body becomes the child's
-system prompt. A configured type's sandbox takes precedence, including
+The launcher passes no model or profile flags by default, so each child resolves
+the installation's own `default_model` and default skill configuration. That
+keeps the same checkout working on machines with different model catalogs. Set
+`CAKE_SUBAGENT_MODEL` or `CAKE_SUBAGENT_PROFILE` to opt into a named entry; a
+configured type's `model` and `profile` front matter makes the same choice per
+agent, and the environment wins when both are present. Sandbox defaults to
+`workspace-write`, and the executable resolves from `CAKE_BIN`, then
+`$HOME/bin/cake`, then `cake` on `PATH`. Configured types live under
+`cwd/.agents/subagents/*.md`; their YAML front matter accepts `name` (matching
+the filename), `sandbox`, `model`, and `profile`, and their body becomes the
+child's system prompt. A configured type's sandbox takes precedence, including
 `danger-full-access` when explicitly configured.
+
+When the child exits before reporting a task, `status.error` includes the tail
+of its stderr with whitespace collapsed, so a model or provider configuration
+failure is visible without opening `log_file`.
 
 The launcher passes a depth marker (`CAKE_TOOLBOX_SUBAGENT_DEPTH`) to Cake so
 both launchers reject nested delegation.
@@ -183,13 +194,14 @@ just vet       # go vet, gofmt check, sh -n on the scripts
 just doctor    # verify the installed symlinks and describe output
 ```
 
-The 13 tests launch actual detached workers against a fake Cake executable, with
-all artifacts under temporary directories. They exercise immediate return,
-partial JSONL records, slow startup, provider/startup failures, missing
-completion, task identity, resume locks, parallel launches, configured prompts,
-cancellation, forced timeout, large results, validation, peer mailbox
-send/inbox/wait/peers, run identity and name uniqueness, and supervisor loss.
-They make no model calls. A live Cake/provider smoke test is separate.
+The offline suite launches actual detached workers against a fake Cake
+executable, with all artifacts under temporary directories. It exercises
+immediate return, partial JSONL records, slow startup, provider/startup
+failures, missing completion, task identity, resume locks, parallel launches,
+configured prompts, model/profile inheritance and overrides, cancellation,
+forced timeout, large results, validation, peer mailbox send/inbox/wait/peers,
+run identity and name uniqueness, and supervisor loss.
+It makes no model calls. A live Cake/provider smoke test is separate.
 
 Layout:
 

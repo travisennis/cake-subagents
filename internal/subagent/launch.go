@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -84,6 +85,28 @@ func launch(args map[string]any) (result map[string]any, err error) {
 		if config == nil {
 			return nil, fmt.Errorf("unknown subagent type %q", typeName)
 		}
+	}
+
+	// Never hardcode a model or profile. Another install may not define the
+	// entry, and Cake aborts before its first turn when it cannot resolve one.
+	// Empty values let Cake use that install's default_model and default skill
+	// configuration; overrides are opt-in and explicit. The environment wins
+	// over the type's front matter so an operator can redirect every launch.
+	model := strings.TrimSpace(os.Getenv("CAKE_SUBAGENT_MODEL"))
+	profile := strings.TrimSpace(os.Getenv("CAKE_SUBAGENT_PROFILE"))
+	if config != nil {
+		if model == "" {
+			model = config.Model
+		}
+		if profile == "" {
+			profile = config.Profile
+		}
+	}
+	if model != "" && !configNamePattern.MatchString(model) {
+		return nil, fmt.Errorf("invalid model %q", model)
+	}
+	if profile != "" && !configNamePattern.MatchString(profile) {
+		return nil, fmt.Errorf("invalid profile %q", profile)
 	}
 
 	name := stringField(args, "name")
@@ -172,6 +195,12 @@ func launch(args map[string]any) (result map[string]any, err error) {
 	if name != "" {
 		state["name"] = name
 	}
+	if model != "" {
+		state["model_config"] = model
+	}
+	if profile != "" {
+		state["profile"] = profile
+	}
 	if team := stringField(args, "team"); team != "" {
 		state["team"] = team
 	}
@@ -207,10 +236,18 @@ func launch(args map[string]any) (result map[string]any, err error) {
 			return nil, homeErr
 		}
 		cakeBin = filepath.Join(home, "bin/cake")
+		if _, statErr := os.Stat(cakeBin); statErr != nil {
+			if found, lookErr := exec.LookPath("cake"); lookErr == nil {
+				cakeBin = found
+			}
+		}
 	}
-	command := []string{
-		cakeBin, "--model", "deepseek-flash-xhigh", "--profile", "all-skills",
-		"--output-format", "stream-json", "--sandbox", sandbox,
+	command := []string{cakeBin, "--output-format", "stream-json", "--sandbox", sandbox}
+	if model != "" {
+		command = append(command, "--model", model)
+	}
+	if profile != "" {
+		command = append(command, "--profile", profile)
 	}
 	if config != nil {
 		promptPath := filepath.Join(directory, "system-prompt.md")
