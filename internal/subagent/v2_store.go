@@ -221,21 +221,15 @@ func v2ParentOwner() (string, error) {
 
 func v2CallerIdentity() (v2Caller, error) {
 	var caller v2Caller
-	for _, key := range []string{"CAKE_SUBAGENT_DEPTH", "CAKE_TOOLBOX_SUBAGENT_DEPTH"} {
-		text := os.Getenv(key)
-		if text == "" {
-			continue
-		}
+	if text := os.Getenv("CAKE_SUBAGENT_DEPTH"); text != "" {
 		if !depthPattern.MatchString(text) {
-			return caller, fmt.Errorf("invalid %s", key)
+			return caller, errors.New("invalid CAKE_SUBAGENT_DEPTH")
 		}
 		value, err := strconv.Atoi(text)
 		if err != nil {
-			return caller, fmt.Errorf("invalid %s", key)
+			return caller, errors.New("invalid CAKE_SUBAGENT_DEPTH")
 		}
-		if value > caller.Depth {
-			caller.Depth = value
-		}
+		caller.Depth = value
 	}
 	childID := strings.ToLower(os.Getenv("CAKE_SUBAGENT_CHILD_ID"))
 	if childID != "" {

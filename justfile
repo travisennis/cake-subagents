@@ -7,12 +7,13 @@ hooks:
     git config core.hooksPath .githooks
     @echo "Installed .githooks (commit-msg)."
 
-# Build the Go binary and the seven tool-name symlinks in dist/.
+# Build the Go binary and the one public tool-name symlink in dist/.
 build:
     go build -o dist/cake-subagent ./cmd/cake-subagent
     @for name in subagent_async subagent_cancel subagent_inbox subagent_peers subagent_send subagent_status subagent_wait; do \
-        ln -sfn cake-subagent "dist/$name"; \
+        rm -f "dist/$name"; \
     done
+    ln -sfn cake-subagent dist/subagent
 
 # Run the offline integration suite against dist/. No model calls.
 test: build
@@ -25,21 +26,16 @@ vet:
     sh -n bin/install
     sh -n bin/uninstall
     sh -n bin/doctor
-    sh -n hooks/subagent-inbox.sh
     sh -n .githooks/commit-msg
 
-# Symlink the seven tools into Cake's global toolbox directory.
+# Symlink the one tool into Cake's global toolbox directory.
 install: build
     ./bin/install
-
-# Build, install, and link the opt-in mailbox push hook.
-install-hook: build
-    ./bin/install --hook
 
 # Remove only links that point into this checkout.
 uninstall:
     ./bin/uninstall
 
-# Verify that Cake will discover all seven tools.
+# Verify that Cake will discover the one subagent tool.
 doctor:
     ./bin/doctor

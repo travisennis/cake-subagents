@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -287,6 +286,10 @@ func v2Message(caller v2Caller, args map[string]any) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
+		if v2ChildUnknown(child, v2SupervisorLive(child.ChildID)) {
+			v2MaybeReportUnknown(child, v2UnknownError)
+			return nil, fmt.Errorf("agent %q is unknown; inspect its last run before sending more work", agent)
+		}
 		if child.State == "closed" {
 			if err := v2RemoveName(caller.OwnerID, agent, existingID); err != nil {
 				return nil, err
@@ -352,6 +355,13 @@ func v2CreateAndMessage(caller v2Caller, agent string, args map[string]any) (map
 			sessionLock.Close()
 			sessionLock = nil
 		}
+		if v2ChildUnknown(child, v2SupervisorLive(child.ChildID)) {
+			v2MaybeReportUnknown(child, v2UnknownError)
+			return nil, fmt.Errorf("agent %q is unknown; inspect its last run before sending more work", agent)
+		}
+		if child.State == "stopping" {
+			return nil, fmt.Errorf("agent %q is closing", agent)
+		}
 		for _, key := range v2CreationKeys {
 			if valueHas(args, key) {
 				return nil, fmt.Errorf("%s is creation-only; close the child and create a new one", key)
@@ -400,7 +410,6 @@ func v2Status(caller v2Caller, args map[string]any) (map[string]any, error) {
 		return map[string]any{"self": v2ChildStatus(child), "children": []any{}, "reports": []any{}}, nil
 	}
 	agent := stringField(args, "agent")
-	reports, _ := v2DrainInbox(caller.OwnerID, agent, v2InboxLimit)
 	if agent != "" {
 		id, err := v2ResolveName(caller.OwnerID, agent)
 		if err != nil {
@@ -413,7 +422,9 @@ func v2Status(caller v2Caller, args map[string]any) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"agent": agent, "children": []any{v2ChildStatus(child)}, "reports": reports}, nil
+		entry := v2ChildStatus(child)
+		reports, _ := v2DrainInbox(caller.OwnerID, agent, v2InboxLimit)
+		return map[string]any{"agent": agent, "children": []any{entry}, "reports": reports}, nil
 	}
 	children, err := v2ListChildren(caller.OwnerID)
 	if err != nil {
@@ -423,17 +434,20 @@ func v2Status(caller v2Caller, args map[string]any) (map[string]any, error) {
 	for _, child := range children {
 		entries = append(entries, v2ChildStatus(child))
 	}
+	// Run the child sweep before draining so a newly materialized unknown
+	// report is visible in this status response.
+	reports, _ := v2DrainInbox(caller.OwnerID, "", v2InboxLimit)
 	return map[string]any{"children": entries, "reports": reports}, nil
 }
 
 func v2ChildStatus(child *v2Child) map[string]any {
 	state := child.State
 	errorText := ""
-	if state == "running" || state == "stopping" || (state == "starting" && !v2SupervisorLive(child.ChildID) && v2StartingExpired(child)) {
-		if !v2SupervisorLive(child.ChildID) {
-			state = "unknown"
-			errorText = "Supervisor exited without recording completion; the child's Cake process may still be running. Inspect the run and process before sending more work."
-		}
+	live := v2SupervisorLive(child.ChildID)
+	if v2ChildUnknown(child, live) {
+		state = "unknown"
+		errorText = v2UnknownError
+		v2MaybeReportUnknown(child, errorText)
 	}
 	queued, _ := v2QueueCount(child.ChildID)
 	entry := map[string]any{
@@ -461,6 +475,66 @@ func v2ChildStatus(child *v2Child) map[string]any {
 		entry["error"] = errorText
 	}
 	return entry
+}
+
+const v2UnknownError = "Supervisor exited without recording completion; the child's Cake process may still be running. Inspect the run and process before sending more work."
+
+func v2ChildUnknown(child *v2Child, live bool) bool {
+	if live {
+		return false
+	}
+	switch child.State {
+	case "running", "stopping", "unknown":
+		return true
+	case "starting":
+		return v2StartingExpired(child)
+	}
+	return false
+}
+
+// v2MaterializeUnknown makes the "lost/unknown always reports" policy visible
+// to wait and to any action that drains the inbox. The marker in
+// v2MaybeReportUnknown keeps repeated calls from duplicating the report.
+func v2MaterializeUnknown(owner string) {
+	children, err := v2ListChildren(owner)
+	if err != nil {
+		return
+	}
+	for _, child := range children {
+		if v2ChildUnknown(child, v2SupervisorLive(child.ChildID)) {
+			v2MaybeReportUnknown(child, v2UnknownError)
+		}
+	}
+}
+
+// v2MaybeReportUnknown materializes the "lost/unknown always reports" policy
+// once. The marker is removed when the child starts another turn or is reset
+// by stop, so a later loss can report again.
+func v2MaybeReportUnknown(child *v2Child, errorText string) {
+	directory, err := v2ChildDir(child.ChildID)
+	if err != nil {
+		return
+	}
+	_ = v2WithLock(filepath.Join(directory, "unknown.lock"), func() error {
+		marker := filepath.Join(directory, "unknown.report")
+		if _, err := os.Stat(marker); err == nil {
+			return nil
+		}
+		if err := v2WriteText(marker, now()+"\n"); err != nil {
+			return err
+		}
+		reportFile := ""
+		if child.LastRunID != "" {
+			reportFile = filepath.Join(directory, "runs", child.LastRunID, "result.json")
+		}
+		_, err := v2AppendInbox(child.OwnerID, map[string]any{
+			"kind": "report", "agent": child.Name, "child_id": child.ChildID,
+			"run_id": child.LastRunID, "session_id": child.SessionID, "outcome": "unknown",
+			"report": child.Report, "text": "", "error": errorText,
+			"created_at": now(), "report_file": reportFile,
+		})
+		return err
+	})
 }
 
 func v2StartingExpired(child *v2Child) bool {
@@ -496,6 +570,7 @@ func v2Wait(caller v2Caller, args map[string]any) (map[string]any, error) {
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
+		v2MaterializeUnknown(caller.OwnerID)
 		reports, unread := v2DrainInbox(caller.OwnerID, agent, v2InboxLimit)
 		if len(reports) > 0 {
 			return map[string]any{"reports": reports, "timeout": false, "empty": false}, nil
@@ -555,6 +630,7 @@ func v2Stop(caller v2Caller, args map[string]any) (map[string]any, error) {
 			return nil, err
 		}
 		_ = os.Remove(filepath.Join(directory, "stop"))
+		_ = os.Remove(filepath.Join(directory, "unknown.report"))
 		return map[string]any{"agent": agent, "child_id": id, "dropped": dropped, "state": "idle"}, nil
 	}
 	if !live {
@@ -636,9 +712,18 @@ func v2TryLease(childID string) (*os.File, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	if err := flock(file, true); err == nil {
-		return file, false, nil
+	// A status probe holds this lease for only a few instructions. Retry
+	// briefly so a message is not misread as having a live supervisor just
+	// because it raced such a probe.
+	for attempt := 0; attempt < 5; attempt++ {
+		if err := flock(file, true); err == nil {
+			return file, false, nil
+		}
+		if attempt < 4 {
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
+	file.Close()
 	return nil, true, nil
 }
 
@@ -684,6 +769,7 @@ func v2FinishStop(childID string) (int, error) {
 	}
 	if directory, err := v2ChildDir(childID); err == nil {
 		_ = os.Remove(filepath.Join(directory, "stop"))
+		_ = os.Remove(filepath.Join(directory, "unknown.report"))
 	}
 	return dropped, nil
 }
@@ -693,12 +779,11 @@ func v2SpawnSupervisor(childID string, sessionLock *os.File) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	lease, err := os.OpenFile(filepath.Join(directory, "supervisor.lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	lease, live, err := v2TryLease(childID)
 	if err != nil {
 		return false, err
 	}
-	if err := flock(lease, true); err != nil {
-		lease.Close()
+	if live {
 		return false, nil
 	}
 	executable, err := os.Executable()
@@ -738,31 +823,20 @@ func v2SpawnSupervisor(childID string, sessionLock *os.File) (bool, error) {
 	return true, nil
 }
 
-func v2Harness() error {
-	decoder := json.NewDecoder(os.Stdin)
-	decoder.UseNumber()
-	var raw any
-	if err := decoder.Decode(&raw); err != nil {
-		return errors.New("arguments must be a JSON object")
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return errors.New("arguments must be a JSON object")
-	}
-	args, ok := raw.(map[string]any)
-	if !ok || args == nil {
-		return errors.New("arguments must be a JSON object")
-	}
+func v2Execute(args map[string]any) (map[string]any, error) {
 	action := stringField(args, "action")
 	if action == "" {
-		return errors.New("action is required")
+		return nil, errors.New("action is required")
 	}
 	if err := v2ValidateRequest(action, args); err != nil {
-		return err
+		return nil, err
 	}
 	caller, err := v2CallerIdentity()
 	if err != nil {
-		return err
+		return nil, err
+	}
+	if !caller.isChild() {
+		v2MaterializeUnknown(caller.OwnerID)
 	}
 	var result map[string]any
 	switch action {
@@ -777,10 +851,17 @@ func v2Harness() error {
 	case "close":
 		result, err = v2Close(caller, args)
 	default:
-		err = fmt.Errorf("unknown v2 action %q", action)
+		err = fmt.Errorf("unknown action %q", action)
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return printJSON(result)
+	// wait and status drain inside their own handlers so they can return the
+	// reports they were waiting on. Every other successful parent action also
+	// drains, which is the guaranteed delivery path while no hook is installed.
+	if !caller.isChild() && action != "wait" && action != "status" {
+		reports, _ := v2DrainInbox(caller.OwnerID, "", v2InboxLimit)
+		result["reports"] = reports
+	}
+	return result, nil
 }

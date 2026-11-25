@@ -1,66 +1,36 @@
-// Package subagent implements the seven Cake toolbox tools that run and
-// message background subagents.
 package subagent
 
 import (
 	"bytes"
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
 
 const (
-	maxRuntime   = 10_800
 	maxBody      = 16_384
-	maxLimit     = 100
-	peerWait     = 30
-	statusWait   = 300
 	compactBytes = 38_000
-	startupWait  = time.Second
 )
 
 var (
 	uuidPattern       = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-	namePattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 	depthPattern      = regexp.MustCompile(`^[0-9]+$`)
 	configNamePattern = regexp.MustCompile(`^[a-z0-9-]+$`)
-	kinds             = []string{"note", "request", "reply", "event"}
-	stringKeys        = []string{"prompt", "cwd", "sandbox", "type", "session_id", "run_id", "to", "body", "kind", "reply_to", "from", "name", "team"}
-	uuidKeys          = []string{"run_id", "session_id", "reply_to"}
-	booleanKeys       = []string{"peek", "all"}
-	activeStates      = map[string]bool{"starting": true, "running": true, "stopping": true}
 )
-
-var toolboxModes = map[string]string{
-	"subagent_async":  "launch",
-	"subagent_status": "status",
-	"subagent_cancel": "cancel",
-	"subagent_send":   "post",
-	"subagent_inbox":  "inbox",
-	"subagent_wait":   "wait",
-	"subagent_peers":  "peers",
-}
-
-var toolNames = map[string]string{
-	"launch": "subagent_async",
-	"status": "subagent_status",
-	"cancel": "subagent_cancel",
-	"post":   "subagent_send",
-	"inbox":  "subagent_inbox",
-	"wait":   "subagent_wait",
-	"peers":  "subagent_peers",
-}
 
 func now() string {
 	return time.Now().UTC().Format(time.RFC3339)
@@ -140,11 +110,6 @@ func asString(value any) string {
 	return text
 }
 
-func asMap(value any) map[string]any {
-	result, _ := value.(map[string]any)
-	return result
-}
-
 func asInt64(value any) (int64, bool) {
 	switch number := value.(type) {
 	case float64:
@@ -169,13 +134,29 @@ func intField(value map[string]any, key string) int64 {
 	return number
 }
 
-func sortedKeys(value map[string]any) []string {
-	keys := make([]string, 0, len(value))
-	for key := range value {
-		keys = append(keys, key)
+func intArg(args map[string]any, key string, fallback int64) int64 {
+	if !valueHas(args, key) {
+		return fallback
 	}
-	sort.Strings(keys)
-	return keys
+	number, ok := asInt64(args[key])
+	if !ok {
+		return fallback
+	}
+	return number
+}
+
+func valueHas(value map[string]any, key string) bool {
+	_, present := value[key]
+	return present
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func expandFrom(path, base string) string {
@@ -209,97 +190,6 @@ func sessionFile(id, cwd string) *string {
 	}
 	path := filepath.Join(expandFrom(dataDir(), cwd), "sessions", id+".jsonl")
 	return &path
-}
-
-func runDirectory(id string) (string, error) {
-	directory := filepath.Join(runsRoot(), id)
-	if info, err := os.Stat(filepath.Join(directory, "status.json")); err != nil || info.IsDir() {
-		return "", fmt.Errorf("unknown run_id %s", id)
-	}
-	return directory, nil
-}
-
-func mailboxDir(directory string) string {
-	return filepath.Join(directory, "mailbox")
-}
-
-func messagesDir(directory string) string {
-	return filepath.Join(mailboxDir(directory), "msg")
-}
-
-func ensureMailbox(directory string) error {
-	return os.MkdirAll(messagesDir(directory), 0o700)
-}
-
-func messageID() string {
-	var random [4]byte
-	_, _ = rand.Read(random[:])
-	return fmt.Sprintf("%013d-%s", time.Now().UnixMilli(), hex.EncodeToString(random[:]))
-}
-
-func deliver(directory string, message map[string]any) error {
-	if err := ensureMailbox(directory); err != nil {
-		return err
-	}
-	return writeJSON(filepath.Join(messagesDir(directory), stringField(message, "id")+".json"), message)
-}
-
-func mailboxMessages(directory string) []map[string]any {
-	entries, err := os.ReadDir(messagesDir(directory))
-	if err != nil {
-		return nil
-	}
-	messages := make([]map[string]any, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		if message := safeReadJSON(filepath.Join(messagesDir(directory), entry.Name())); message != nil {
-			messages = append(messages, message)
-		}
-	}
-	return messages
-}
-
-func readCursor(directory string) string {
-	data, err := os.ReadFile(filepath.Join(mailboxDir(directory), "cursor"))
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(data))
-}
-
-func writeCursor(directory, value string) error {
-	if err := os.MkdirAll(mailboxDir(directory), 0o700); err != nil {
-		return err
-	}
-	file, err := os.OpenFile(filepath.Join(mailboxDir(directory), "cursor"), os.O_RDWR|os.O_CREATE, 0o600)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	if err := flock(file, false); err != nil {
-		return err
-	}
-	if err := file.Truncate(0); err != nil {
-		return err
-	}
-	if _, err := file.Seek(0, 0); err != nil {
-		return err
-	}
-	_, err = file.WriteString(value)
-	return err
-}
-
-func unreadMessages(directory string) []map[string]any {
-	cursor := readCursor(directory)
-	unread := make([]map[string]any, 0)
-	for _, message := range mailboxMessages(directory) {
-		if stringField(message, "id") > cursor {
-			unread = append(unread, message)
-		}
-	}
-	return unread
 }
 
 // agentType is a configured subagent under cwd/.agents/subagents/<name>.md.
@@ -410,65 +300,105 @@ func configs(cwd string) ([]agentType, error) {
 	return result, nil
 }
 
-func rosterDir() string {
-	return filepath.Join(runsRoot(), "roster")
+type processExit struct {
+	code     int
+	signal   int
+	signaled bool
 }
 
-func rosterWrite(entry map[string]any) error {
-	if err := os.MkdirAll(rosterDir(), 0o700); err != nil {
-		return err
+func waitProcess(command *exec.Cmd) processExit {
+	_ = command.Wait()
+	status, ok := command.ProcessState.Sys().(syscall.WaitStatus)
+	if !ok {
+		return processExit{code: command.ProcessState.ExitCode()}
 	}
-	return writeJSON(filepath.Join(rosterDir(), stringField(entry, "run_id")+".json"), entry)
+	if status.Signaled() {
+		return processExit{signal: int(status.Signal()), signaled: true}
+	}
+	return processExit{code: status.ExitStatus()}
 }
 
-// rosterEntries returns static identity joined with live status, so a deleted
-// run disappears and a finished one reports terminal state.
-func rosterEntries() []map[string]any {
-	entries, err := os.ReadDir(rosterDir())
+func withEnv(overrides map[string]string) []string {
+	environment := make([]string, 0, len(os.Environ())+len(overrides))
+	for _, entry := range os.Environ() {
+		key := entry
+		if index := strings.IndexByte(entry, '='); index >= 0 {
+			key = entry[:index]
+		}
+		if _, replaced := overrides[key]; replaced {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	for key, value := range overrides {
+		environment = append(environment, key+"="+value)
+	}
+	return environment
+}
+
+// execFailure matches Ruby's Errno::ENOENT message shape, which the offline
+// suite asserts on for a missing CAKE_BIN.
+func execFailure(err error, path string) error {
+	if errors.Is(err, syscall.ENOENT) {
+		return fmt.Errorf("No such file or directory - %s", path)
+	}
+	return err
+}
+
+// logTail returns the end of a log with whitespace collapsed and its length
+// bounded, so a startup failure can name its cause in status instead of only
+// in a file the caller has to open.
+func logTail(path string, limit int) string {
+	file, err := os.Open(path)
 	if err != nil {
-		return nil
+		return ""
 	}
-	result := make([]map[string]any, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		roster := safeReadJSON(filepath.Join(rosterDir(), entry.Name()))
-		if roster == nil || stringField(roster, "run_id") == "" {
-			continue
-		}
-		live := safeReadJSON(filepath.Join(runsRoot(), stringField(roster, "run_id"), "status.json"))
-		if live == nil {
-			continue
-		}
-		roster["session_id"] = live["session_id"]
-		roster["status"] = live["status"]
-		result = append(result, roster)
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return ""
 	}
-	return result
+	const readLimit = 1024
+	offset := info.Size() - readLimit
+	if offset < 0 {
+		offset = 0
+	}
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return ""
+	}
+	data, err := io.ReadAll(io.LimitReader(file, readLimit))
+	if err != nil {
+		return ""
+	}
+	text := strings.Join(strings.Fields(string(data)), " ")
+	if len(text) > limit {
+		text = text[:limit] + "..."
+	}
+	return text
 }
 
-func runSessionID(id string) any {
-	state := safeReadJSON(filepath.Join(runsRoot(), id, "status.json"))
-	if state == nil {
-		return nil
+// compact keeps the model-visible payload under the toolbox stdout budget while
+// the full result stays on disk.
+func compact(state map[string]any) map[string]any {
+	compactState := make(map[string]any, len(state)+2)
+	for key, value := range state {
+		compactState[key] = value
 	}
-	return state["session_id"]
-}
-
-func selfRunID() string {
-	value := os.Getenv("CAKE_SUBAGENT_RUN_ID")
-	if isUUID(value) {
-		return strings.ToLower(value)
-	}
-	return ""
-}
-
-func contains(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
+	for _, key := range []string{"result", "error"} {
+		text, ok := compactState[key].(string)
+		if !ok {
+			continue
+		}
+		for {
+			data, err := marshalJSON(compactState)
+			if err != nil || len(data) <= compactBytes || utf8.RuneCountInString(text) <= 256 {
+				break
+			}
+			runes := []rune(text)
+			text = string(runes[:len(runes)/2])
+			compactState[key] = text
+			compactState[key+"_truncated"] = true
 		}
 	}
-	return false
+	return compactState
 }

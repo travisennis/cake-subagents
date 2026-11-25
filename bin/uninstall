@@ -1,12 +1,13 @@
 #!/bin/sh
-# Remove the symlinks created by bin/install. Only links pointing into this
-# repository are removed; anything else is reported and left alone.
+# Remove the symlink created by bin/install. Only links pointing into this
+# repository are removed; anything else is reported and left alone. Legacy
+# checkout-owned subagent_* and subagent-inbox.sh links are cleaned up too.
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd -P)
 config=${XDG_CONFIG_HOME:-"$HOME/.config"}
 dest=${CAKE_TOOLBOX_DEST:-"$config/cake/tools"}
-names="subagent_async subagent_cancel subagent_inbox subagent_peers subagent_send subagent_status subagent_wait"
+legacy="subagent_async subagent_cancel subagent_inbox subagent_peers subagent_send subagent_status subagent_wait"
 
 remove() {
     link=$1
@@ -20,7 +21,8 @@ remove() {
     esac
 }
 
-for name in $names; do
+remove "$dest/subagent"
+for name in $legacy; do
     remove "$dest/$name"
 done
 remove "$config/cake/hooks/subagent-inbox.sh"

@@ -29,12 +29,11 @@ func v2Marker(directory, name string) bool {
 
 func v2ChildEnv(child *v2Child, runID string) map[string]string {
 	environment := map[string]string{
-		"CAKE_SUBAGENT_DEPTH":         "1",
-		"CAKE_TOOLBOX_SUBAGENT_DEPTH": "1",
-		"CAKE_SUBAGENT_CHILD_ID":      child.ChildID,
-		"CAKE_SUBAGENT_PARENT_OWNER":  child.OwnerID,
-		"CAKE_SUBAGENT_NAME":          child.Name,
-		"CAKE_SUBAGENT_RUN_ID":        runID,
+		"CAKE_SUBAGENT_DEPTH":        "1",
+		"CAKE_SUBAGENT_CHILD_ID":     child.ChildID,
+		"CAKE_SUBAGENT_PARENT_OWNER": child.OwnerID,
+		"CAKE_SUBAGENT_NAME":         child.Name,
+		"CAKE_SUBAGENT_RUN_ID":       runID,
 	}
 	if child.SessionID != "" {
 		environment["CAKE_SUBAGENT_SESSION_ID"] = child.SessionID
@@ -346,6 +345,7 @@ func v2RunTurn(child *v2Child, message *v2QueuedMessage, sessionLock **os.File, 
 	if err := v2EnsureDir(runDirectory); err != nil {
 		return turn, err
 	}
+	_ = os.Remove(filepath.Join(childDirectory, "unknown.report"))
 	eventsPath := filepath.Join(runDirectory, "events.jsonl")
 	logPath := filepath.Join(runDirectory, "stderr.log")
 	resultPath := filepath.Join(runDirectory, "result.json")

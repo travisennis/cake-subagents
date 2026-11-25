@@ -1,11 +1,12 @@
 #!/bin/sh
-# Verify that Cake will discover all seven tools and that each reports the
+# Verify that Cake will discover the one subagent tool and that it reports the
 # expected name. Reads only; makes no model calls and starts no runs.
 set -eu
 
+root=$(cd "$(dirname "$0")/.." && pwd -P)
 config=${XDG_CONFIG_HOME:-"$HOME/.config"}
 dest=${CAKE_TOOLBOX_DEST:-"$config/cake/tools"}
-names="subagent_async subagent_cancel subagent_inbox subagent_peers subagent_send subagent_status subagent_wait"
+legacy="subagent_async subagent_cancel subagent_inbox subagent_peers subagent_send subagent_status subagent_wait"
 failures=0
 
 if [ ! -d "$dest" ]; then
@@ -14,29 +15,38 @@ if [ ! -d "$dest" ]; then
     exit 1
 fi
 
-for name in $names; do
-    link="$dest/$name"
-    if [ ! -L "$link" ]; then
-        printf 'missing: %s is not a symlink\n' "$link" >&2
-        failures=$((failures + 1))
-        continue
-    fi
+link=$dest/subagent
+if [ ! -L "$link" ]; then
+    printf 'missing: %s is not a symlink\n' "$link" >&2
+    failures=$((failures + 1))
+else
     if ! output=$(TOOLBOX_ACTION=describe "$link" 2>&1); then
-        printf 'describe failed: %s: %s\n' "$name" "$output" >&2
+        printf 'describe failed: subagent: %s\n' "$output" >&2
         failures=$((failures + 1))
-        continue
+    else
+        reported=$(printf '%s' "$output" | /usr/bin/ruby -rjson -e 'puts JSON.parse($stdin.read).fetch("name")')
+        if [ "$reported" != "subagent" ]; then
+            printf 'name mismatch: subagent reported %s\n' "$reported" >&2
+            failures=$((failures + 1))
+        else
+            printf 'ok: subagent\n'
+        fi
     fi
-    reported=$(printf '%s' "$output" | /usr/bin/ruby -rjson -e 'puts JSON.parse($stdin.read).fetch("name")')
-    if [ "$reported" != "$name" ]; then
-        printf 'name mismatch: %s reported %s\n' "$name" "$reported" >&2
-        failures=$((failures + 1))
-        continue
-    fi
-    printf 'ok: %s\n' "$name"
-done
-
-if [ -e "$config/cake/tools/README.md" ]; then
-    printf 'note: %s/cake/tools/README.md now lives in this repository\n' "$config" >&2
 fi
+
+for name in $legacy; do
+    link=$dest/$name
+    [ -L "$link" ] || continue
+    target=$(readlink "$link")
+    case "$target" in
+        "$root"/*)
+            printf 'legacy link still installed: %s -> %s\n' "$link" "$target" >&2
+            failures=$((failures + 1))
+            ;;
+        *)
+            printf 'note: %s is an unrelated legacy link\n' "$link" >&2
+            ;;
+    esac
+done
 
 exit "$failures"

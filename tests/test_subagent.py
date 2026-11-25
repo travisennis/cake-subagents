@@ -1,7 +1,7 @@
-"""Offline tests for the v2 child-conversation store and supervisor.
+"""Offline tests for the single public subagent tool.
 
-These exercise the internal `v2` harness, not the public seven-tool surface.
-That surface is intentionally unchanged until Slice 2.
+These drive the real `subagent` symlink through the toolbox protocol, with a
+fake Cake executable. No model calls and no network.
 """
 import json
 import os
@@ -16,10 +16,12 @@ import unittest
 import uuid
 
 TOOLS = Path(os.environ.get("CAKE_SUBAGENT_TOOLS", Path(__file__).resolve().parents[1] / "dist"))
+TOOL = TOOLS / "subagent"
 BINARY = TOOLS / "cake-subagent"
 PARENT_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 OWNER = f"session-{PARENT_ID}"
-ACTIVE = {"starting", "running", "stopping"}
+LEGACY = ["subagent_async", "subagent_cancel", "subagent_inbox",
+          "subagent_peers", "subagent_send", "subagent_status", "subagent_wait"]
 
 FAKE = r'''
 import json, os, signal, sys, time, uuid
@@ -108,9 +110,9 @@ def timestamp():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-class V2SubagentTests(unittest.TestCase):
+class SubagentTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="cake-subagent-v2-")
+        self.temp = tempfile.TemporaryDirectory(prefix="cake-subagent-test-")
         self.directory = Path(self.temp.name)
         self.runs = self.directory / "runs"
         self.workspace = self.directory / "workspace"
@@ -127,12 +129,11 @@ class V2SubagentTests(unittest.TestCase):
                         CAKE_DATA_DIR=str(self.directory / "cake-data"),
                         CAKE_THREAD_ID=PARENT_ID,
                         CAKE_SUBAGENT_DEPTH="0",
-                        CAKE_TOOLBOX_SUBAGENT_DEPTH="0",
                         FAKE_CAKE_LOG=str(self.log))
         for key in ["CAKE_SUBAGENT_PARENT_OWNER", "CAKE_SUBAGENT_CHILD_ID",
                     "CAKE_SUBAGENT_NAME", "CAKE_SUBAGENT_RUN_ID",
                     "CAKE_SUBAGENT_SESSION_ID", "CAKE_SUBAGENT_MODEL",
-                    "CAKE_SUBAGENT_PROFILE"]:
+                    "CAKE_SUBAGENT_PROFILE", "CAKE_TOOLBOX_SUBAGENT_DEPTH"]:
             self.env.pop(key, None)
 
     def tearDown(self):
@@ -170,12 +171,19 @@ class V2SubagentTests(unittest.TestCase):
 
     def call(self, action, *, env=None, expect=0, **args):
         payload = {"action": action, **args}
-        result = subprocess.run([str(BINARY), "v2"], input=json.dumps(payload),
+        result = subprocess.run([str(TOOL)], input=json.dumps(payload),
                                 text=True, capture_output=True, cwd=self.workspace,
-                                env=dict(env or self.env), timeout=20)
+                                env=dict(env or self.env, TOOLBOX_ACTION="execute"), timeout=20)
         if expect:
             self.assertNotEqual(result.returncode, 0, result.stdout)
             return result.stderr
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def describe(self):
+        result = subprocess.run([str(TOOL)], input="{}", text=True,
+                                capture_output=True, cwd=self.workspace,
+                                env=dict(self.env, TOOLBOX_ACTION="describe"), timeout=12)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
@@ -278,6 +286,62 @@ class V2SubagentTests(unittest.TestCase):
         }))
         path.chmod(0o600)
 
+    def test_describe_and_install_surface(self):
+        description = self.describe()
+        self.assertEqual(description["name"], "subagent")
+        self.assertEqual(description["replay"], "never")
+        self.assertGreater(description["timeout"], 300)
+        schema = description["inputSchema"]
+        self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(schema["required"], ["action"])
+        self.assertEqual(schema["properties"]["action"]["enum"],
+                         ["message", "wait", "status", "stop", "close"])
+        self.assertIn("allOf", schema)
+        self.assertTrue(TOOL.exists())
+        for name in LEGACY:
+            self.assertFalse((TOOLS / name).exists(), name)
+
+        root = Path(__file__).resolve().parents[1]
+        dest = self.directory / "tools"
+        dest.mkdir()
+        config = self.directory / "config"
+        binary = BINARY.resolve()
+        (dest / "subagent_async").symlink_to(binary)
+        (dest / "subagent_status").write_text("user file\n")
+        hook = config / "cake/hooks/subagent-inbox.sh"
+        hook.parent.mkdir(parents=True)
+        hook.symlink_to(root / "README.md")
+        env = dict(self.env, CAKE_TOOLBOX_DEST=str(dest), XDG_CONFIG_HOME=str(config))
+
+        install = subprocess.run([str(root / "bin/install")], text=True,
+                                 capture_output=True, cwd=self.workspace, env=env, timeout=12)
+        self.assertEqual(install.returncode, 0, install.stderr)
+        self.assertTrue((dest / "subagent").is_symlink())
+        self.assertEqual((dest / "subagent").resolve(), binary)
+        self.assertFalse((dest / "subagent_async").exists())
+        self.assertFalse(hook.exists())
+        self.assertTrue((dest / "subagent_status").exists())
+
+        doctor = subprocess.run([str(root / "bin/doctor")], text=True,
+                                capture_output=True, cwd=self.workspace, env=env, timeout=12)
+        self.assertEqual(doctor.returncode, 0, doctor.stderr)
+        self.assertIn("ok: subagent", doctor.stdout)
+
+        uninstall = subprocess.run([str(root / "bin/uninstall")], text=True,
+                                   capture_output=True, cwd=self.workspace, env=env, timeout=12)
+        self.assertEqual(uninstall.returncode, 0, uninstall.stderr)
+        self.assertFalse((dest / "subagent").exists())
+        self.assertTrue((dest / "subagent_status").exists())
+
+    def test_any_successful_action_drains_reports(self):
+        self.message("first", {"delay": 0.05, "result": "one"})
+        self.wait_for_state("first", {"idle"})
+        second = self.message("second", {"delay": 0.5, "result": "two"})
+        self.assertEqual([report["text"] for report in second["reports"]], ["one"])
+        self.wait_for_state("second", {"idle"})
+        stopped = self.call("stop", agent="second")
+        self.assertEqual([report["text"] for report in stopped["reports"]], ["two"])
+
     def test_message_wait_status_and_environment(self):
         response = self.message("worker", {"delay": 0.05, "result": "first"})
         self.assertTrue(response["created"])
@@ -318,7 +382,7 @@ class V2SubagentTests(unittest.TestCase):
         start = starts[0]
         self.assertNotIn("--resume", start["args"])
         self.assertEqual(start["depth"], "1")
-        self.assertEqual(start["legacy_depth"], "1")
+        self.assertIsNone(start["legacy_depth"])
         self.assertEqual(start["child_id"], child_id)
         self.assertEqual(start["parent_owner"], OWNER)
         self.assertEqual(start["name"], "worker")
@@ -480,15 +544,14 @@ class V2SubagentTests(unittest.TestCase):
         self.assertTrue(run["cake_pid"])
         os.kill(record["supervisor_pid"], signal.SIGKILL)
         try:
-            deadline = time.monotonic() + 8
-            state = None
-            while time.monotonic() < deadline:
-                state = self.status("worker")["children"][0]
-                if state["state"] == "unknown":
-                    break
-                time.sleep(0.05)
+            result = self.wait("worker", timeout_seconds=8)
+            self.assertEqual(result["reports"][0]["outcome"], "unknown")
+            state = self.status("worker")["children"][0]
             self.assertEqual(state["state"], "unknown")
             self.assertIn("may still be running", state["error"])
+            self.assertEqual(self.status("worker")["reports"], [])
+            error = self.message("worker", {"delay": 0.05}, expect=2)
+            self.assertIn("unknown", error)
         finally:
             try:
                 os.killpg(run["cake_pid"], signal.SIGKILL)
@@ -496,6 +559,8 @@ class V2SubagentTests(unittest.TestCase):
                 pass
 
     def test_validation_creation_only_instructions_and_child_message(self):
+        self.call("nope", expect=2)
+        self.call("status", agent="worker", extra=1, expect=2)
         for args in [{}, {"agent": "Bad", "message": "x"},
                      {"agent": "worker"}, {"agent": "worker", "message": "x", "extra": 1},
                      {"agent": "worker", "message": "x", "report": "sometimes"},

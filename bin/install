@@ -1,26 +1,24 @@
 #!/bin/sh
-# Link the toolbox executables into Cake's global toolbox directory.
+# Link the single subagent toolbox executable into Cake's global toolbox
+# directory. Build first: `just build` writes dist/cake-subagent.
 #
-# Build first: `just build` writes dist/cake-subagent.
-#
-#   bin/install            # the seven subagent_* tools
-#   bin/install --hook     # also link the opt-in mailbox delivery hook
+#   bin/install            # link tb__subagent
 #
 # Re-run after changing the repository. Existing non-symlink files are never
-# replaced, so a hand-written tool with the same name is safe.
+# replaced, so a hand-written tool with the same name is safe. Legacy
+# subagent_* symlinks and the old subagent-inbox.sh hook link are removed only
+# when they still point into this checkout.
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd -P)
 config=${XDG_CONFIG_HOME:-"$HOME/.config"}
 dest=${CAKE_TOOLBOX_DEST:-"$config/cake/tools"}
-hook_dir=$config/cake/hooks
 binary=$root/dist/cake-subagent
-names="subagent_async subagent_cancel subagent_inbox subagent_peers subagent_send subagent_status subagent_wait"
+legacy="subagent_async subagent_cancel subagent_inbox subagent_peers subagent_send subagent_status subagent_wait"
+legacy_hook=$config/cake/hooks/subagent-inbox.sh
 
-with_hook=0
 for arg in "$@"; do
     case "$arg" in
-        --hook) with_hook=1 ;;
         -h | --help)
             sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
@@ -38,25 +36,29 @@ if [ ! -x "$binary" ]; then
     exit 1
 fi
 
-mkdir -p "$dest"
-for name in $names; do
-    link="$dest/$name"
-    if [ -e "$link" ] && [ ! -L "$link" ]; then
-        printf 'refusing to replace non-symlink: %s\n' "$link" >&2
-        exit 1
-    fi
-    ln -sfn "$binary" "$link"
-    printf 'linked %s -> %s\n' "$link" "$binary"
-done
+remove_owned_link() {
+    link=$1
+    [ -L "$link" ] || return 0
+    target=$(readlink "$link")
+    case "$target" in
+        "$root"/*)
+            rm -f "$link"
+            printf 'removed legacy %s\n' "$link"
+            ;;
+    esac
+}
 
-if [ "$with_hook" -eq 1 ]; then
-    mkdir -p "$hook_dir"
-    link="$hook_dir/subagent-inbox.sh"
-    if [ -e "$link" ] && [ ! -L "$link" ]; then
-        printf 'refusing to replace non-symlink: %s\n' "$link" >&2
-        exit 1
-    fi
-    ln -sfn "$root/hooks/subagent-inbox.sh" "$link"
-    printf 'linked %s -> %s\n' "$link" "$root/hooks/subagent-inbox.sh"
-    printf 'Enable it with the PreToolUse entry in README.md.\n'
+mkdir -p "$dest"
+for name in $legacy; do
+    remove_owned_link "$dest/$name"
+done
+remove_owned_link "$legacy_hook"
+
+link=$dest/subagent
+if [ -e "$link" ] && [ ! -L "$link" ]; then
+    printf 'refusing to replace non-symlink: %s\n' "$link" >&2
+    exit 1
 fi
+ln -sfn "$binary" "$link"
+printf 'linked %s -> %s\n' "$link" "$binary"
+printf 'The public tool is tb__subagent; remove old subagent_* entries and the subagent-inbox.sh PreToolUse entry from Cake settings if present.\n'

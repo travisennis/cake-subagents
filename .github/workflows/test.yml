@@ -17,11 +17,9 @@ jobs:
         run: |
           go vet ./...
           test -z "$(gofmt -l cmd internal)"
-          sh -n bin/install bin/uninstall bin/doctor hooks/subagent-inbox.sh
+          sh -n bin/install bin/uninstall bin/doctor .githooks/commit-msg
       - name: Test
         run: |
           go build -o dist/cake-subagent ./cmd/cake-subagent
-          for name in subagent_async subagent_cancel subagent_inbox subagent_peers subagent_send subagent_status subagent_wait; do
-            ln -sfn cake-subagent "dist/$name"
-          done
+          ln -sfn cake-subagent dist/subagent
           CAKE_SUBAGENT_TOOLS="$PWD/dist" python3 -m unittest discover -s tests -v
