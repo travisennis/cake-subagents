@@ -220,3 +220,9 @@ dist/               build output; created by `just build`, not committed
 
 `tests/` drives whatever `CAKE_SUBAGENT_TOOLS` points at, so it can validate a
 future rewrite without changes.
+
+The current branch also contains the Slice 1 v2 child-conversation
+implementation (`internal/subagent/v2_*.go`). `tests/test_subagent_v2.py`
+exercises it through the internal `v2` subcommand; it is not installed as a
+Cake tool. The seven public tools above remain the current surface until
+Slice 2.

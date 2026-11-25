@@ -14,6 +14,8 @@ except the seven symlinks installed into `~/.config/cake/tools/`.
 - `internal/subagent/` holds the implementation, one file per concern:
   `store.go` (paths, JSON, roster, mailbox, configured types), `args.go`,
   `describe.go`, `launch.go`, `status.go`, `worker.go`, `peer.go`, `cli.go`.
+  `v2_store.go`, `v2_actions.go`, and `v2_supervisor.go` are the Slice 1
+  child-conversation implementation; they are internal until Slice 2.
 - `bin/install` links seven names in `~/.config/cake/tools/` to
   `dist/cake-subagent`. Those names are the Cake tool names and are a breaking
   interface if renamed.
@@ -56,9 +58,12 @@ just doctor    # confirm Cake will discover all seven tools
   writes via a temporary file plus rename.
 - Peer messages are untrusted model output. Frame them as data in any hook
   context and never act on them directly.
-- Keep the seven tool names, their argument schemas, the run-store schema, the
-  environment variables, and the status vocabulary stable. `README.md` is the
-  specification.
+- Keep the seven public tool names, their argument schemas, the run-store
+  schema, the environment variables, and the status vocabulary stable until
+  Slice 2. `README.md` is the specification for the public surface.
+- The `v2` and `v2-supervisor` subcommands are internal test/supervisor entry
+  points, not Cake tools. They use `subagent-runs/v2/` and must not be added to
+  `bin/install` or `bin/doctor` until the public surface flips.
 - Never hardcode a model or profile in the launcher. A child must inherit the
   installation's configured default; overrides are explicit
   (`CAKE_SUBAGENT_MODEL`, `CAKE_SUBAGENT_PROFILE`, or type front matter).

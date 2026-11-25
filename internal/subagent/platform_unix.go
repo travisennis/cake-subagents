@@ -22,6 +22,10 @@ func signalGroup(pid int, signal syscall.Signal) {
 	}
 }
 
+func unlock(file *os.File) error {
+	return syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+}
+
 func ignoreHangup() {
 	signal.Ignore(syscall.SIGHUP)
 }

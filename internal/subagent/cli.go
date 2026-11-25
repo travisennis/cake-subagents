@@ -24,21 +24,30 @@ func run() error {
 	// Explicit subcommands win over filename dispatch: the supervisor re-execs
 	// this binary as `worker`, and on macOS os.Executable reports the symlink
 	// path it was started from.
-	if len(arguments) > 1 && (arguments[1] == "worker" || arguments[1] == "drain") {
-		if arguments[1] == "worker" {
+	if len(arguments) > 1 {
+		switch arguments[1] {
+		case "worker":
 			if len(arguments) < 3 {
 				return errors.New("worker requires a run directory")
 			}
 			return worker(arguments[2])
+		case "v2-supervisor":
+			if len(arguments) < 3 {
+				return errors.New("v2-supervisor requires a child_id")
+			}
+			return v2Supervisor(arguments[2])
+		case "v2":
+			return v2Harness()
+		case "drain":
+			decision, err := drain()
+			if err != nil {
+				return err
+			}
+			if len(decision) > 0 {
+				return printJSON(decision)
+			}
+			return nil
 		}
-		decision, err := drain()
-		if err != nil {
-			return err
-		}
-		if len(decision) > 0 {
-			return printJSON(decision)
-		}
-		return nil
 	}
 	if mode, known := toolboxModes[program]; known {
 		arguments = append([]string{arguments[0], mode}, arguments[1:]...)
@@ -67,7 +76,7 @@ func run() error {
 		return printJSON(result)
 	}
 	if mode == "" {
-		return fmt.Errorf("usage: %s (%s|drain)", program, strings.Join([]string{"launch", "status", "cancel", "post", "inbox", "wait", "peers"}, "|"))
+		return fmt.Errorf("usage: %s (%s|drain|v2|v2-supervisor)", program, strings.Join([]string{"launch", "status", "cancel", "post", "inbox", "wait", "peers"}, "|"))
 	}
 	return errors.New("TOOLBOX_ACTION must be describe or execute")
 }
