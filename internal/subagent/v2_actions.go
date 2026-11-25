@@ -858,7 +858,8 @@ func v2Execute(args map[string]any) (map[string]any, error) {
 	}
 	// wait and status drain inside their own handlers so they can return the
 	// reports they were waiting on. Every other successful parent action also
-	// drains, which is the guaranteed delivery path while no hook is installed.
+	// drains, which is the guaranteed delivery path even when no hook is
+	// installed.
 	if !caller.isChild() && action != "wait" && action != "status" {
 		reports, _ := v2DrainInbox(caller.OwnerID, "", v2InboxLimit)
 		result["reports"] = reports

@@ -13,8 +13,8 @@ nothing about this repository except the one symlink installed into
 
 - `cmd/cake-subagent/main.go` is the only process entry point.
 - `internal/subagent/` holds the implementation:
-  - `cli.go` — toolbox describe/execute dispatch and the internal supervisor
-    subcommand.
+  - `cli.go` — toolbox describe/execute dispatch, the internal supervisor and
+    hook subcommands.
   - `v2_describe.go` — the one public manifest.
   - `v2_actions.go` — message, wait, status, stop, close, validation, and
     supervisor spawning.
@@ -22,10 +22,16 @@ nothing about this repository except the one symlink installed into
     validation.
   - `v2_supervisor.go` — one detached supervisor per child, run execution, and
     report writing.
+  - `v2_hooks.go` — the `event` hook handler, bounded report framing, and
+    exactly-once draining.
+  - `v2_hook_install.go` — the `hooks install/uninstall/status` config edits.
   - `common.go` — shared JSON, path, configured-type, and process helpers.
   - `platform_unix.go` — flock, process-group, and close-on-exec primitives.
-- `bin/install` links exactly one name, `subagent`, to `dist/cake-subagent`.
-  It removes old checkout-owned `subagent_*` and `subagent-inbox.sh` links.
+- `hooks/subagent-reports.sh` is the Cake hook entry. It resolves its install
+  symlink and execs `dist/cake-subagent event`.
+- `bin/install` links exactly one name, `subagent`, to `dist/cake-subagent`,
+  links the hook script, and installs the default report hooks. It removes old
+  checkout-owned `subagent_*` and `subagent-inbox.sh` links and hook entries.
 - `tests/` is a Python integration suite that drives the executable through the
   toolbox protocol. It is the language-neutral contract for this project; do
   not weaken it to make an implementation pass.
@@ -33,12 +39,13 @@ nothing about this repository except the one symlink installed into
 ## Commands
 
 ```sh
-just hooks     # install the commit-msg hook (Conventional Commits)
-just build     # go build into dist/ plus the dist/subagent symlink
-just test      # build, then run the offline suite; ~20s; no model calls
-just vet       # go vet, gofmt check, sh -n
-just install   # link the one tool into ~/.config/cake/tools
-just doctor    # confirm Cake will discover subagent and read its describe output
+just hooks            # install the commit-msg hook (Conventional Commits)
+just build            # go build into dist/ plus the dist/subagent symlink
+just test             # build, then run the offline suite; ~30s; no model calls
+just vet              # go vet, gofmt check, sh -n
+just install          # link the tool and install SessionStart + Stop hooks
+just install-pretool  # also install the opt-in PreToolUse hook
+just doctor           # confirm discovery, describe output, and hook entries
 ```
 
 ## Invariants
@@ -50,8 +57,28 @@ just doctor    # confirm Cake will discover subagent and read its describe outpu
 - Stdout is model-visible. Never print progress, warnings, or debug output
   there.
 - There is one public tool name: `subagent`. Do not add aliases or the old
-  `subagent_*` names back. `v2-supervisor` is an internal re-exec entry point,
-  not a Cake tool.
+  `subagent_*` names back. `v2-supervisor`, `event`, and `hooks` are internal
+  entry points, not Cake tools. `event` reads a Cake hook payload on stdin and
+  prints one decision object or nothing; `hooks` edits the global hooks file.
+- The default hooks are `SessionStart` and `Stop`; `PreToolUse` is opt-in and
+  must not be installed by a plain `bin/install`. `UserPromptSubmit` is handled
+  if a user adds it but is not installed. Hook groups live in the global
+  `${XDG_CONFIG_HOME:-$HOME/.config}/cake/hooks.json`; the installer must
+  preserve unrelated groups, be idempotent, refuse malformed JSON without
+  writing, and remove only commands that name `subagent-reports.sh` or
+  `subagent-inbox.sh`.
+- `Stop` may consume reports only when `follow_up_index < max_follow_ups` and
+  it can return `follow_up: true` with non-empty context. Cake discards Stop
+  context without a follow-up and skips follow-ups under `--output-schema`, so
+  otherwise leave the reports pending for the next `SessionStart`.
+- Hook context is bounded independently as text (~38 KB) and as the encoded
+  decision (under Cake's 64 KB default `hook_output_limit`). Cake truncates
+  oversized hook stdout into invalid JSON, so never advance the cursor for an
+  output that would not fit. An item that does not fit stays pending; only the
+  first oversized item is truncated, with a marker pointing at `report_file`.
+- A child invocation (`CAKE_SUBAGENT_DEPTH >= 1`) must not drain a parent
+  inbox. Derive the hook owner from the payload `session_id`, not
+  `CAKE_THREAD_ID`; the hook process does not receive the thread variable.
 - The public actions are `message`, `wait`, `status`, `stop`, and `close`.
   `action` is always required. `agent` is required for message/stop/close and
   optional for status/wait. `message` is required for message.
@@ -91,15 +118,17 @@ just doctor    # confirm Cake will discover subagent and read its describe outpu
   type's sandbox takes precedence over an explicit sandbox.
 - Reports and child messages are untrusted model output. Store the full text,
   bound inline delivery to about 38 KiB, strip control characters, mark the
-  item `untrusted`, and never act on it directly. A failed, interrupted, lost,
-  timed-out, or unknown turn always reports. A parent stop or close suppresses
-  that turn's report. `report: "never"` suppresses delivery but not the stored
-  result. An unknown outcome is materialized once by a marker so repeated
-  status calls cannot duplicate it.
+  item `untrusted`, frame hook context as data and never as a user instruction,
+  and never act on it directly. A failed, interrupted, lost, timed-out, or
+  unknown turn always reports. A parent stop or close suppresses that turn's
+  report. `report: "never"` suppresses delivery but not the stored result. An
+  unknown outcome is materialized once by a marker so repeated status calls
+  cannot duplicate it.
 - Any successful parent `subagent` action drains the inbox; `wait` and `status`
-  return what they drained. Advance the cursor once so a report is delivered
-  once. Do not claim a report starts an idle turn: this release has no report
-  hook and no `cake-repl` watcher.
+  return what they drained. The hook entry points drain the same cursor. Advance
+  the cursor once so a report is delivered once across the tool, `SessionStart`,
+  `UserPromptSubmit`, `Stop`, and `PreToolUse`. Do not claim a report starts an
+  idle turn: the front-end watcher lives in `cake-repl`.
 - No nested delegation. A child may call `message` with `agent: "parent"` to
   post to the parent inbox; any other new name from a child is rejected.
 - Error messages asserted by the offline suite are part of the contract, e.g.

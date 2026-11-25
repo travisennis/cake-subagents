@@ -1,11 +1,12 @@
 #!/bin/sh
-# Verify that Cake will discover the one subagent tool and that it reports the
-# expected name. Reads only; makes no model calls and starts no runs.
+# Verify that Cake will discover the one subagent tool and that its report
+# hooks are installed. Reads only; makes no model calls and starts no runs.
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd -P)
 config=${XDG_CONFIG_HOME:-"$HOME/.config"}
 dest=${CAKE_TOOLBOX_DEST:-"$config/cake/tools"}
+hook_link=$config/cake/hooks/subagent-reports.sh
 legacy="subagent_async subagent_cancel subagent_inbox subagent_peers subagent_send subagent_status subagent_wait"
 failures=0
 
@@ -30,6 +31,42 @@ else
             failures=$((failures + 1))
         else
             printf 'ok: subagent\n'
+        fi
+    fi
+fi
+
+if [ ! -L "$hook_link" ]; then
+    printf 'missing hook script: %s is not a symlink\n' "$hook_link" >&2
+    failures=$((failures + 1))
+else
+    target=$(readlink "$hook_link")
+    case "$target" in
+        "$root"/*) printf 'ok: hook script\n' ;;
+        *)
+            printf 'hook script points outside this checkout: %s -> %s\n' "$hook_link" "$target" >&2
+            failures=$((failures + 1))
+            ;;
+    esac
+fi
+
+if [ -L "$link" ]; then
+    if ! hooks=$("$link" hooks status 2>&1); then
+        printf 'hooks status failed: %s\n' "$hooks" >&2
+        failures=$((failures + 1))
+    else
+        if ! summary=$(printf '%s' "$hooks" | /usr/bin/ruby -rjson -e '
+            data = JSON.parse($stdin.read)
+            installed = data.fetch("installed", [])
+            abort("missing SessionStart report hook") unless installed.include?("SessionStart")
+            abort("missing Stop report hook") unless installed.include?("Stop")
+            abort("legacy subagent-inbox.sh hook is still installed") if data["legacy"]
+            puts "ok: hooks SessionStart, Stop"
+            puts "note: PreToolUse report hook is installed (opt-in)" if installed.include?("PreToolUse")
+        ' 2>&1); then
+            printf '%s\n' "$summary" >&2
+            failures=$((failures + 1))
+        else
+            printf '%s\n' "$summary"
         fi
     fi
 fi

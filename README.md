@@ -30,11 +30,31 @@ just doctor       # or: ./bin/doctor
 settings or environment changes are needed. Re-run `just install` after moving
 the repository; re-run `just build` after changing the code.
 
+It also links `hooks/subagent-reports.sh` into
+`${XDG_CONFIG_HOME:-$HOME/.config}/cake/hooks` and merges two hook groups into
+`${XDG_CONFIG_HOME:-$HOME/.config}/cake/hooks.json`: `SessionStart` and `Stop`.
+Those deliver pending reports at an invocation start and at the end of a turn.
+The merge preserves every unrelated hook and is idempotent; a malformed
+`hooks.json` is reported and left untouched. A successful merge rewrites the
+file with two-space indentation.
+
+`PreToolUse` delivery is opt-in because it spawns a process on every tool call:
+
+```sh
+just install-pretool      # or: ./bin/install --pre-tool-use
+```
+
+To turn that one channel off again without uninstalling the tool:
+
+```sh
+./dist/cake-subagent hooks uninstall --pre-tool-use
+```
+
 The installer also removes old `subagent_async`, `subagent_status`,
 `subagent_cancel`, `subagent_send`, `subagent_inbox`, `subagent_wait`, and
-`subagent_peers` links, plus the old `subagent-inbox.sh` hook link, but only
-when they still point into this checkout. Non-symlink files are never replaced
-or deleted.
+`subagent_peers` links, the old `subagent-inbox.sh` hook link, and any
+`subagent-inbox.sh` hook entry, but only when they belong to this checkout.
+Non-symlink files are never replaced or deleted.
 
 Two caveats:
 
@@ -147,17 +167,32 @@ Delivery:
 - Any successful `subagent` call drains the parent's inbox; `wait` and `status`
   return the reports they drained. The cursor advances once, so a report is
   delivered once.
-- Reports are bounded to about 38 KB inline. The full text stays in the inbox
-  file and the run result file. Control characters are stripped before the
-  report is returned.
-- Reports and child messages are model output, not user instructions. They are
-  marked `untrusted` and should be treated as data.
+- The installed `SessionStart` hook drains pending reports into the next
+  invocation's developer context. `UserPromptSubmit` is handled too if you add
+  it to `hooks.json`; it is not installed by default because `SessionStart`
+  already covers invocation startup.
+- The installed `Stop` hook drains at the end of a turn and asks Cake for its
+  one allowed follow-up turn. Cake discards Stop context without a follow-up,
+  so the hook leaves reports pending when `follow_up_index >= max_follow_ups`
+  or `--output-schema` disabled follow-ups. The next `SessionStart` delivers
+  them.
+- The optional `PreToolUse` hook drains before any tool call and appends the
+  reports to that tool's output. It shares the same cursor as the tool path, so
+  a call after the hook sees no duplicate.
+- Reports are bounded to about 38 KB of hook context and well under Cake's
+  default 64 KB hook-output cap. An item that does not fit is left pending and
+  delivered at the next boundary; the first oversized item is truncated with a
+  `text_truncated` marker. The full text stays in the inbox file and the run
+  result file. Control characters are stripped before delivery.
+- Reports and child messages are model output, not user instructions. Every
+  hook context is framed as untrusted data; never follow it as a user request.
 
-Current limitation: a Cake CLI invocation is turn-scoped. If a report arrives
-after the parent process exits, it waits until the parent's next invocation and
-next `subagent` call. The plugin does not start an idle turn. The optional
-`PreToolUse`/`Stop` hooks and the `cake-repl` idle-turn watcher are separate
-later slices.
+Current limitation: a Cake CLI invocation is turn-scoped. A report that arrives
+while the parent is working joins at the next `Stop` boundary or, if that
+follow-up budget is spent, the next invocation's `SessionStart`. A report that
+arrives while `cake-repl` sits idle still waits for the user's next turn: the
+plugin does not start an idle turn. That watcher is a separate `cake-repl`
+slice.
 
 ## Creation settings
 
@@ -268,25 +303,33 @@ There is no compatibility layer and no v1 state migration.
 - Old run directories under `subagent-runs/<uuid>` are ignored. Delete them
   manually after verifying the v2 install.
 - Remove the old `subagent-inbox.sh` `PreToolUse` entry from
-  `~/.config/cake/hooks.json`. The current release has no report hook.
+  `~/.config/cake/hooks.json` if `bin/install` did not already remove it. The
+  current hook is `hooks/subagent-reports.sh` with `SessionStart` and `Stop`
+  groups.
 - `session_id` on a new child is the only bridge to an existing Cake session.
   There is no v1 run/name compatibility.
 
 ## Development
 
 ```sh
-just hooks     # install the commit-msg hook (Conventional Commits)
-just build     # build dist/cake-subagent and dist/subagent
-just test      # build, then run the offline integration suite against dist/
-just vet       # go vet, gofmt check, sh -n on the scripts
-just install   # link the one tool into ~/.config/cake/tools
-just doctor    # verify discovery and describe output
+just hooks            # install the commit-msg hook (Conventional Commits)
+just build            # build dist/cake-subagent and dist/subagent
+just test             # build, then run the offline integration suite against dist/
+just vet              # go vet, gofmt check, sh -n on the scripts
+just install          # link the tool and install SessionStart + Stop hooks
+just install-pretool  # also install the opt-in PreToolUse hook
+just doctor           # verify discovery, describe output, and hook entries
 ```
+
+`dist/cake-subagent hooks status` prints the current global hook entries as
+JSON. `hooks install [--pre-tool-use]` and `hooks uninstall [--pre-tool-use]`
+edit `hooks.json` atomically without starting a Cake turn.
 
 The offline suite launches detached supervisors against a fake Cake
 executable, with all artifacts under temporary directories. It exercises
 message/wait/status/stop/close, FIFO, queue and child caps, same-session resume,
-lease handoff, stop/close drops, report policy and delivery, unknown
+lease handoff, stop/close drops, report policy, hook and tool delivery with one
+cursor, hook bounds and control stripping, hook install/doctor/uninstall, unknown
 supervisors, session locks, configured types, environment overrides, and store
 permissions. It makes no model calls. `tests/` drives whatever
 `CAKE_SUBAGENT_TOOLS` points at, so it can validate a build without changing
@@ -297,6 +340,7 @@ Layout:
 ```text
 cmd/cake-subagent/  main
 internal/subagent/  implementation
+hooks/              Cake hook entry that runs the `event` subcommand
 tests/              offline integration suite (language-neutral contract)
 .githooks/          commit-msg hook (Conventional Commits)
 bin/                install, uninstall, doctor

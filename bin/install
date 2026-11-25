@@ -1,24 +1,30 @@
 #!/bin/sh
 # Link the single subagent toolbox executable into Cake's global toolbox
-# directory. Build first: `just build` writes dist/cake-subagent.
+# directory and install its report hooks. Build first: `just build` writes
+# dist/cake-subagent.
 #
-#   bin/install            # link tb__subagent
+#   bin/install                  # link tb__subagent; add SessionStart and Stop hooks
+#   bin/install --pre-tool-use   # also drain reports before every tool call
 #
 # Re-run after changing the repository. Existing non-symlink files are never
-# replaced, so a hand-written tool with the same name is safe. Legacy
-# subagent_* symlinks and the old subagent-inbox.sh hook link are removed only
-# when they still point into this checkout.
+# replaced, so a hand-written tool or hook script with the same name is safe.
+# Legacy subagent_* links, the old subagent-inbox.sh link, and its hooks.json
+# entry are removed only when they belong to this checkout.
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd -P)
 config=${XDG_CONFIG_HOME:-"$HOME/.config"}
 dest=${CAKE_TOOLBOX_DEST:-"$config/cake/tools"}
 binary=$root/dist/cake-subagent
+hook_source=$root/hooks/subagent-reports.sh
+hook_link=$config/cake/hooks/subagent-reports.sh
 legacy="subagent_async subagent_cancel subagent_inbox subagent_peers subagent_send subagent_status subagent_wait"
 legacy_hook=$config/cake/hooks/subagent-inbox.sh
+pre_tool_use=
 
 for arg in "$@"; do
     case "$arg" in
+        --pre-tool-use) pre_tool_use=--pre-tool-use ;;
         -h | --help)
             sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
@@ -33,6 +39,10 @@ done
 if [ ! -x "$binary" ]; then
     printf 'missing %s\n' "$binary" >&2
     printf 'run `just build` first\n' >&2
+    exit 1
+fi
+if [ ! -f "$hook_source" ]; then
+    printf 'missing %s\n' "$hook_source" >&2
     exit 1
 fi
 
@@ -60,5 +70,25 @@ if [ -e "$link" ] && [ ! -L "$link" ]; then
     exit 1
 fi
 ln -sfn "$binary" "$link"
+
+mkdir -p "$(dirname "$hook_link")"
+if [ -e "$hook_link" ] && [ ! -L "$hook_link" ]; then
+    printf 'refusing to replace non-symlink: %s\n' "$hook_link" >&2
+    exit 1
+fi
+ln -sfn "$hook_source" "$hook_link"
+
+if ! "$binary" hooks install $pre_tool_use >/dev/null; then
+    printf 'the tool is linked, but installing the report hooks failed\n' >&2
+    printf 'fix %s/cake/hooks.json and re-run bin/install\n' "$config" >&2
+    exit 1
+fi
+
 printf 'linked %s -> %s\n' "$link" "$binary"
-printf 'The public tool is tb__subagent; remove old subagent_* entries and the subagent-inbox.sh PreToolUse entry from Cake settings if present.\n'
+printf 'linked %s -> %s\n' "$hook_link" "$hook_source"
+if [ -n "$pre_tool_use" ]; then
+    printf 'installed report hooks: SessionStart, Stop, PreToolUse (opt-in)\n'
+else
+    printf 'installed report hooks: SessionStart, Stop (PreToolUse stays opt-in)\n'
+fi
+printf 'The public tool is tb__subagent; remove old subagent_* entries from Cake settings if present.\n'

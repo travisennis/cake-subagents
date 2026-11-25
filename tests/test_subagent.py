@@ -94,10 +94,13 @@ if scenario.get("no_completion"):
     log({"event": "end", "pid": os.getpid(), "time": time.time(), "outcome": "no_completion"})
     sys.exit(0)
 emit({"type": "message", "role": "assistant", "content": "progress"})
+result_value = scenario.get("result", "finished")
+if scenario.get("result_file"):
+    result_value = Path(scenario["result_file"]).read_text()
 emit({"type": "task_complete", "session_id": sid,
       "task_id": str(uuid.uuid4()) if scenario.get("wrong_task") else tid,
       "subtype": scenario.get("subtype", "success"),
-      "result": scenario.get("result", "finished"),
+      "result": result_value,
       "error": "provider failed" if scenario.get("subtype") == "error_during_execution" else None,
       "duration_ms": 100, "turn_count": 1, "tool_call_count": 0, "usage": {}})
 log({"event": "end", "pid": os.getpid(), "time": time.time(),
@@ -187,6 +190,29 @@ class SubagentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
+    def hook(self, event="SessionStart", *, env=None, session_id=PARENT_ID,
+             follow_up_index=None, max_follow_ups=None, expect=0):
+        payload = {"version": 1, "session_id": session_id, "hook_event_name": event}
+        if follow_up_index is not None:
+            payload["follow_up_index"] = follow_up_index
+        if max_follow_ups is not None:
+            payload["max_follow_ups"] = max_follow_ups
+        result = subprocess.run([str(TOOL), "event"], input=json.dumps(payload),
+                                text=True, capture_output=True, cwd=self.workspace,
+                                env=dict(env or self.env), timeout=12)
+        if expect:
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            return result.stderr
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout) if result.stdout.strip() else {}
+
+    def hooks(self, *args, env=None):
+        result = subprocess.run([str(TOOL), "hooks", *args], text=True,
+                                capture_output=True, cwd=self.workspace,
+                                env=dict(env or self.env), timeout=12)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
     def message(self, agent, scenario=None, env=None, **args):
         return self.call("message", agent=agent, message=json.dumps(scenario or {}),
                          env=env, **args)
@@ -220,6 +246,19 @@ class SubagentTests(unittest.TestCase):
                 return last
             time.sleep(0.05)
         self.fail(f"{agent} did not reach {states}: {last}")
+
+    def wait_for_inbox(self, count, timeout=10):
+        # A second message to an idle child returns while the old child record
+        # still says idle, so state alone is not a completion signal. Inbox
+        # files survive cursor advancement, so their count is cumulative.
+        deadline = time.monotonic() + timeout
+        last = []
+        while time.monotonic() < deadline:
+            last = list((self.owner_dir / "inbox").glob("*.json"))
+            if len(last) >= count:
+                return last
+            time.sleep(0.05)
+        self.fail(f"inbox did not reach {count} items: {[path.name for path in last]}")
 
     def wait_for_child_state(self, child_id, state, timeout=8):
         deadline = time.monotonic() + timeout
@@ -308,9 +347,9 @@ class SubagentTests(unittest.TestCase):
         binary = BINARY.resolve()
         (dest / "subagent_async").symlink_to(binary)
         (dest / "subagent_status").write_text("user file\n")
-        hook = config / "cake/hooks/subagent-inbox.sh"
-        hook.parent.mkdir(parents=True)
-        hook.symlink_to(root / "README.md")
+        legacy_hook = config / "cake/hooks/subagent-inbox.sh"
+        legacy_hook.parent.mkdir(parents=True)
+        legacy_hook.symlink_to(root / "README.md")
         env = dict(self.env, CAKE_TOOLBOX_DEST=str(dest), XDG_CONFIG_HOME=str(config))
 
         install = subprocess.run([str(root / "bin/install")], text=True,
@@ -319,19 +358,43 @@ class SubagentTests(unittest.TestCase):
         self.assertTrue((dest / "subagent").is_symlink())
         self.assertEqual((dest / "subagent").resolve(), binary)
         self.assertFalse((dest / "subagent_async").exists())
-        self.assertFalse(hook.exists())
+        self.assertFalse(legacy_hook.exists())
         self.assertTrue((dest / "subagent_status").exists())
+        installed_hook = config / "cake/hooks/subagent-reports.sh"
+        self.assertTrue(installed_hook.is_symlink())
+        self.assertEqual(installed_hook.resolve(), root / "hooks/subagent-reports.sh")
+        document = json.loads((config / "cake/hooks.json").read_text())
+        for event in ["SessionStart", "Stop"]:
+            commands = [item["command"] for group in document["hooks"][event]
+                        for item in group["hooks"]]
+            self.assertTrue(any("subagent-reports.sh" in item for item in commands), event)
+        self.assertNotIn("PreToolUse", document["hooks"])
 
         doctor = subprocess.run([str(root / "bin/doctor")], text=True,
                                 capture_output=True, cwd=self.workspace, env=env, timeout=12)
         self.assertEqual(doctor.returncode, 0, doctor.stderr)
         self.assertIn("ok: subagent", doctor.stdout)
+        self.assertIn("ok: hooks SessionStart, Stop", doctor.stdout)
+
+        pretool = subprocess.run([str(root / "bin/install"), "--pre-tool-use"], text=True,
+                                 capture_output=True, cwd=self.workspace, env=env, timeout=12)
+        self.assertEqual(pretool.returncode, 0, pretool.stderr)
+        document = json.loads((config / "cake/hooks.json").read_text())
+        self.assertIn("PreToolUse", document["hooks"])
+        doctor = subprocess.run([str(root / "bin/doctor")], text=True,
+                                capture_output=True, cwd=self.workspace, env=env, timeout=12)
+        self.assertEqual(doctor.returncode, 0, doctor.stderr)
+        self.assertIn("note: PreToolUse report hook is installed", doctor.stdout)
 
         uninstall = subprocess.run([str(root / "bin/uninstall")], text=True,
                                    capture_output=True, cwd=self.workspace, env=env, timeout=12)
         self.assertEqual(uninstall.returncode, 0, uninstall.stderr)
         self.assertFalse((dest / "subagent").exists())
         self.assertTrue((dest / "subagent_status").exists())
+        self.assertFalse(installed_hook.exists())
+        document = json.loads((config / "cake/hooks.json").read_text())
+        for event in ["SessionStart", "Stop"]:
+            self.assertNotIn(event, document.get("hooks", {}))
 
     def test_any_successful_action_drains_reports(self):
         self.message("first", {"delay": 0.05, "result": "one"})
@@ -341,6 +404,200 @@ class SubagentTests(unittest.TestCase):
         self.wait_for_state("second", {"idle"})
         stopped = self.call("stop", agent="second")
         self.assertEqual([report["text"] for report in stopped["reports"]], ["two"])
+
+    def test_hook_delivers_reports_exactly_once(self):
+        self.message("worker", {"delay": 0.05, "result": "hook one"})
+        self.wait_for_inbox(1)
+        first = self.hook("SessionStart")
+        self.assertIn("hook one", first["additional_context"])
+        self.assertIn("untrusted", first["additional_context"])
+        self.assertEqual(self.hook("SessionStart"), {})
+        self.assertEqual(self.status()["reports"], [])
+
+        self.message("worker", {"delay": 0.05, "result": "hook two"})
+        self.wait_for_inbox(2)
+        child_env = dict(self.env, CAKE_SUBAGENT_DEPTH="1")
+        self.assertEqual(self.hook("SessionStart", env=child_env), {})
+        second = self.hook("UserPromptSubmit")
+        self.assertIn("hook two", second["additional_context"])
+        self.assertEqual(self.hook("PreToolUse"), {})
+        self.assertEqual(self.status()["reports"], [])
+
+    def test_stop_hook_requests_one_follow_up_and_preserves_spillover(self):
+        self.message("worker", {"delay": 0.05, "result": "stop one"})
+        self.wait_for_inbox(1)
+        decision = self.hook("Stop", follow_up_index=0, max_follow_ups=1)
+        self.assertTrue(decision["follow_up"])
+        self.assertIn("stop one", decision["additional_context"])
+
+        self.message("worker", {"delay": 0.05, "result": "stop two"})
+        self.wait_for_inbox(2)
+        self.assertEqual(self.hook("Stop", follow_up_index=1, max_follow_ups=1), {})
+        self.assertEqual(self.hook("Stop", follow_up_index=0, max_follow_ups=0), {})
+        late = self.hook("SessionStart")
+        self.assertIn("stop two", late["additional_context"])
+        self.assertEqual(self.status()["reports"], [])
+
+    def test_pre_tool_use_and_tool_share_one_cursor(self):
+        self.message("worker", {"delay": 0.05, "result": "pre one"})
+        self.wait_for_inbox(1)
+        decision = self.hook("PreToolUse")
+        self.assertIn("pre one", decision["additional_context"])
+        self.assertEqual(self.status()["reports"], [])
+        self.assertEqual(self.hook("PreToolUse"), {})
+
+    def test_hook_report_policy(self):
+        self.message("broken", {"startup_failure": True}, report="never")
+        self.wait_for_inbox(1)
+        context = self.hook("SessionStart")["additional_context"]
+        self.assertIn("failed", context)
+        self.assertIn("invalid provider configuration", context)
+
+        self.message("quiet", {"delay": 0.05, "result": "done"}, report="never")
+        self.wait_for_state("quiet", {"idle"})
+        self.assertEqual(self.hook("SessionStart"), {})
+
+        self.message("slow", {"delay": 30, "ignore_term": True})
+        self.wait_for_state("slow", {"running"})
+        self.call("stop", agent="slow")
+        self.wait_for_state("slow", {"idle"})
+        self.assertEqual(self.hook("SessionStart"), {})
+
+    def test_hook_strips_control_characters_and_bounds_reports(self):
+        self.message("ansi", {"delay": 0.05,
+                              "result": "\u001b[31mred\u001b[0m\u0000done"})
+        self.wait_for_inbox(1)
+        context = self.hook("SessionStart")["additional_context"]
+        self.assertIn("done", context)
+        self.assertNotIn("\u001b", context)
+        self.assertNotIn("\u0000", context)
+
+        first_file = self.directory / "first-report.txt"
+        second_file = self.directory / "second-report.txt"
+        first_file.write_text("q" * 100_000)
+        second_file.write_text("z" * 100_000)
+        # Queue both turns before the first report exists, because every
+        # successful message action drains pending reports.
+        self.message("big", {"delay": 2, "result_file": str(first_file)})
+        self.message("big", {"delay": 0.05, "result_file": str(second_file)})
+        self.wait_for_inbox(3)
+
+        first = self.hook("SessionStart")
+        first_context = first["additional_context"]
+        self.assertIn("qqqq", first_context)
+        self.assertNotIn("zzzz", first_context)
+        self.assertIn("more item(s) pending", first_context)
+        self.assertIn("text_truncated", first_context)
+        self.assertLessEqual(len(first_context.encode()), 38_000)
+        self.assertLessEqual(len(json.dumps(first).encode()), 65_536)
+
+        second = self.hook("SessionStart")
+        second_context = second["additional_context"]
+        self.assertIn("zzzz", second_context)
+        self.assertNotIn("more item(s) pending", second_context)
+        self.assertLessEqual(len(second_context.encode()), 38_000)
+        self.assertEqual(self.hook("SessionStart"), {})
+
+        child_id = self.child_record("big")["child_id"]
+        results = [json.loads(path.read_text())["result"]
+                   for path in (self.children_root / child_id / "runs").glob("*/result.json")]
+        self.assertEqual(len(results), 2)
+        self.assertTrue(all(len(result) == 100_000 for result in results))
+
+    def test_hooks_install_merges_preserves_and_is_idempotent(self):
+        config = self.directory / "config"
+        hooks_path = config / "cake/hooks.json"
+        hooks_path.parent.mkdir(parents=True)
+        existing = {
+            "version": 1,
+            "hooks": {
+                "SessionStart": [{"matcher": "*", "hooks": [
+                    {"type": "command", "command": "echo existing", "timeout": 10}]}],
+                "Stop": [{"hooks": [
+                    {"type": "command",
+                     "command": "\"${XDG_CONFIG_HOME:-$HOME/.config}/cake/hooks/subagent-inbox.sh\""}]}],
+                "UserPromptSubmit": [{"hooks": [
+                    {"type": "command", "command": "echo prompt"}]}],
+            },
+        }
+        hooks_path.write_text(json.dumps(existing))
+        env = dict(self.env, XDG_CONFIG_HOME=str(config))
+
+        result = self.hooks("install", env=env)
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["legacy_removed"], 1)
+        document = json.loads(hooks_path.read_text())
+        self.assertEqual(document["version"], 1)
+        self.assertIn("UserPromptSubmit", document["hooks"])
+        self.assertNotIn("subagent-inbox.sh", hooks_path.read_text())
+        for event in ["SessionStart", "Stop"]:
+            commands = [item["command"] for group in document["hooks"][event]
+                        for item in group["hooks"]]
+            self.assertEqual(sum("subagent-reports.sh" in item for item in commands), 1)
+        self.assertIn("echo existing", hooks_path.read_text())
+        self.assertNotIn("PreToolUse", document["hooks"])
+
+        before = hooks_path.read_text()
+        unchanged = self.hooks("install", env=env)
+        self.assertFalse(unchanged["changed"])
+        self.assertEqual(hooks_path.read_text(), before)
+
+        self.hooks("install", "--pre-tool-use", env=env)
+        document = json.loads(hooks_path.read_text())
+        self.assertIn("PreToolUse", document["hooks"])
+        self.hooks("install", env=env)
+        document = json.loads(hooks_path.read_text())
+        self.assertIn("PreToolUse", document["hooks"])
+
+        removed = self.hooks("uninstall", "--pre-tool-use", env=env)
+        self.assertEqual(removed["removed"], 1)
+        document = json.loads(hooks_path.read_text())
+        self.assertNotIn("PreToolUse", document["hooks"])
+        self.assertIn("SessionStart", document["hooks"])
+        self.assertIn("Stop", document["hooks"])
+
+        removed = self.hooks("uninstall", env=env)
+        self.assertEqual(removed["removed"], 2)
+        document = json.loads(hooks_path.read_text())
+        self.assertNotIn("Stop", document["hooks"])
+        self.assertIn("SessionStart", document["hooks"])
+        self.assertEqual(document["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+                         "echo existing")
+        self.assertIn("UserPromptSubmit", document["hooks"])
+
+        hooks_path.write_text("{not json\n")
+        broken = subprocess.run([str(TOOL), "hooks", "status"], text=True,
+                                capture_output=True, cwd=self.workspace, env=env, timeout=12)
+        self.assertNotEqual(broken.returncode, 0)
+        self.assertEqual(hooks_path.read_text(), "{not json\n")
+
+    def test_installed_hook_command_runs_the_report_script(self):
+        root = Path(__file__).resolve().parents[1]
+        dest = self.directory / "tools"
+        dest.mkdir()
+        config = self.directory / "config"
+        env = dict(self.env, CAKE_TOOLBOX_DEST=str(dest), XDG_CONFIG_HOME=str(config))
+        install = subprocess.run([str(root / "bin/install")], text=True,
+                                 capture_output=True, cwd=self.workspace, env=env, timeout=12)
+        self.assertEqual(install.returncode, 0, install.stderr)
+
+        self.message("worker", {"delay": 0.05, "result": "wrapper report"})
+        self.wait_for_state("worker", {"idle"})
+        document = json.loads((config / "cake/hooks.json").read_text())
+        command = next(item["command"] for group in document["hooks"]["SessionStart"]
+                       for item in group["hooks"] if "subagent-reports.sh" in item["command"])
+        payload = {"version": 1, "session_id": PARENT_ID, "hook_event_name": "SessionStart"}
+        result = subprocess.run(["/bin/sh", "-c", command], input=json.dumps(payload),
+                                text=True, capture_output=True, cwd=self.workspace,
+                                env=env, timeout=12)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("wrapper report", json.loads(result.stdout)["additional_context"])
+
+        again = subprocess.run(["/bin/sh", "-c", command], input=json.dumps(payload),
+                               text=True, capture_output=True, cwd=self.workspace,
+                               env=env, timeout=12)
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(again.stdout.strip(), "")
 
     def test_message_wait_status_and_environment(self):
         response = self.message("worker", {"delay": 0.05, "result": "first"})

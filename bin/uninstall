@@ -1,12 +1,14 @@
 #!/bin/sh
-# Remove the symlink created by bin/install. Only links pointing into this
-# repository are removed; anything else is reported and left alone. Legacy
-# checkout-owned subagent_* and subagent-inbox.sh links are cleaned up too.
+# Remove the symlinks created by bin/install and the report hook entries.
+# Only links pointing into this repository are removed; anything else is
+# reported and left alone. Legacy checkout-owned subagent_* and
+# subagent-inbox.sh links are cleaned up too.
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd -P)
 config=${XDG_CONFIG_HOME:-"$HOME/.config"}
 dest=${CAKE_TOOLBOX_DEST:-"$config/cake/tools"}
+binary=$root/dist/cake-subagent
 legacy="subagent_async subagent_cancel subagent_inbox subagent_peers subagent_send subagent_status subagent_wait"
 
 remove() {
@@ -21,10 +23,22 @@ remove() {
     esac
 }
 
+if [ -x "$binary" ]; then
+    if ! "$binary" hooks uninstall >/dev/null; then
+        printf 'could not remove report hook entries from %s/cake/hooks.json\n' "$config" >&2
+        exit 1
+    fi
+    printf 'removed report hook entries\n'
+else
+    printf 'warning: %s is missing; report hook entries in %s/cake/hooks.json were not removed\n' \
+        "$binary" "$config" >&2
+fi
+
 remove "$dest/subagent"
 for name in $legacy; do
     remove "$dest/$name"
 done
+remove "$config/cake/hooks/subagent-reports.sh"
 remove "$config/cake/hooks/subagent-inbox.sh"
 
 printf 'Run directories under %s/subagent-runs are untouched.\n' "${CAKE_DATA_DIR:-$HOME/.local/share/cake}"

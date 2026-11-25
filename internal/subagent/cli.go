@@ -30,6 +30,20 @@ func run() error {
 		}
 		return v2Supervisor(arguments[2])
 	}
+	// `event` and `hooks` are explicit subcommands, not Cake tools. They must
+	// work through the dist binary as well as the subagent symlink and must not
+	// depend on TOOLBOX_ACTION.
+	if len(arguments) > 1 {
+		switch arguments[1] {
+		case "event":
+			if len(arguments) != 2 {
+				return errors.New("event takes no arguments")
+			}
+			return v2HookEvent(os.Stdin, os.Stdout)
+		case "hooks":
+			return v2HooksCommand(arguments[2:], os.Stdout)
+		}
+	}
 	mode := ""
 	if program == "subagent" {
 		mode = "subagent"
@@ -89,10 +103,14 @@ func decodeV2Arguments() (map[string]any, error) {
 }
 
 func printJSON(value any) error {
+	return printJSONTo(os.Stdout, value)
+}
+
+func printJSONTo(writer io.Writer, value any) error {
 	data, err := marshalJSON(value)
 	if err != nil {
 		return err
 	}
-	_, err = os.Stdout.Write(data)
+	_, err = writer.Write(data)
 	return err
 }
