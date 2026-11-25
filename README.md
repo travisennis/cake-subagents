@@ -97,8 +97,9 @@ Start a self-contained task:
 ```
 
 The message result contains `agent`, `child_id`, `state`, `created`, `spawned`,
-`queued`, `message_id`, and, when known, `session_id` and `report`. Any pending
-reports are in `reports`.
+`queued`, `message_id`, and, when known, `session_id` and `report`. `created` is
+true only for the message that creates the named child; later messages to the
+same child return false. Any pending reports are in `reports`.
 
 Continue the same conversation:
 

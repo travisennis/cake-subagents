@@ -324,7 +324,7 @@ func v2Message(caller v2Caller, args map[string]any) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return v2MessageResult(child, true, spawned, queued)
+		return v2MessageResult(child, false, spawned, queued)
 	}
 	return v2CreateAndMessage(caller, agent, args)
 }

@@ -406,7 +406,8 @@ class SubagentTests(unittest.TestCase):
         self.assertEqual([report["text"] for report in stopped["reports"]], ["two"])
 
     def test_hook_delivers_reports_exactly_once(self):
-        self.message("worker", {"delay": 0.05, "result": "hook one"})
+        first_message = self.message("worker", {"delay": 0.05, "result": "hook one"})
+        self.assertTrue(first_message["created"])
         self.wait_for_inbox(1)
         first = self.hook("SessionStart")
         self.assertIn("hook one", first["additional_context"])
@@ -414,7 +415,8 @@ class SubagentTests(unittest.TestCase):
         self.assertEqual(self.hook("SessionStart"), {})
         self.assertEqual(self.status()["reports"], [])
 
-        self.message("worker", {"delay": 0.05, "result": "hook two"})
+        second_message = self.message("worker", {"delay": 0.05, "result": "hook two"})
+        self.assertFalse(second_message["created"])
         self.wait_for_inbox(2)
         child_env = dict(self.env, CAKE_SUBAGENT_DEPTH="1")
         self.assertEqual(self.hook("SessionStart", env=child_env), {})
