@@ -17,7 +17,7 @@ jobs:
         run: |
           go vet ./...
           test -z "$(gofmt -l cmd internal)"
-          sh -n bin/install bin/uninstall bin/doctor .githooks/commit-msg
+          sh -n bin/install bin/uninstall bin/doctor hooks/subagent-reports.sh .githooks/commit-msg
       - name: Test
         run: |
           go build -o dist/cake-subagent ./cmd/cake-subagent
